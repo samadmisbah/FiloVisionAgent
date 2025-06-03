@@ -8,12 +8,24 @@ app = FastAPI()
 class ImageItem(BaseModel):
     name: str
     url: str
+    id: Optional[str] = None
 
 class RankRequest(BaseModel):
     images: List[ImageItem]
     history_folder: Optional[str] = None
+    water_well_name: Optional[str] = None
+    max_selections: Optional[int] = 10
 
 @app.post("/rank-images")
 async def rank_images_endpoint(payload: RankRequest):
-    results = await rank_images(payload.images, payload.history_folder)
+    results = await rank_images(
+        payload.images, 
+        payload.history_folder,
+        payload.water_well_name,
+        payload.max_selections
+    )
     return results
+
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "service": "filo-vision-agent"}
