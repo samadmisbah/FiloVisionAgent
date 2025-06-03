@@ -80,14 +80,27 @@ async def rank_images(images, history_folder, water_well_name=None, max_selectio
             
             # Enhanced prompt with water well context
             prompt = f"""Rank this image for importance to a donor for the {water_well_name or 'water well project'}. 
-            Rate from 1-10 based on:
-            - Clear plaques with donor names (high priority)
-            - Smiling children using the well (high priority)  
-            - Emotional content showing impact (medium priority)
-            - Clear well construction/completion (medium priority)
-            - Community gathering around well (low-medium priority)
-            
-            Provide a brief reason for the score."""
+            Rate from 1-10 based on these priorities:
+
+            HIGH PRIORITY (8-10 points):
+            - Clear plaques with donor names prominently displayed
+            - Children smiling while using or near the well
+            - Families gathering around the completed well
+            - Clear water flowing from the well demonstrating success
+
+            MEDIUM PRIORITY (5-7 points):
+            - Well construction progress showing community involvement
+            - Community leaders or elders present at the well
+            - Educational signage about water safety or well maintenance
+            - Before/after comparison showing transformation
+
+            LOW-MEDIUM PRIORITY (3-4 points):
+            - General construction activities
+            - Equipment or materials being delivered
+            - Landscape/environmental context
+            - Technical aspects of well construction
+
+            Provide a score (1-10) and brief reason focusing on donor appeal and community impact."""
             
             response = openai.chat.completions.create(
                 model="gpt-4o",
