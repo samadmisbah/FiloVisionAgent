@@ -18,8 +18,11 @@ class RankRequest(BaseModel):
 
 @app.post("/rank-images")
 async def rank_images_endpoint(payload: RankRequest):
+    # Convert Pydantic models to dictionaries
+    images_dict = [img.dict() for img in payload.images]
+    
     results = await rank_images(
-        payload.images, 
+        images_dict,  # Pass as dictionaries, not Pydantic objects
         payload.history_folder,
         payload.water_well_name,
         payload.max_selections
