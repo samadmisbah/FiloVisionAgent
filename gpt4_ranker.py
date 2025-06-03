@@ -39,7 +39,7 @@ async def rank_images(images, history_folder, water_well_name=None, max_selectio
             Provide a brief reason for the score."""
             
             response = openai.chat.completions.create(
-                model="gpt-4-vision-preview",
+                model="gpt-4o",  # Updated to current model
                 messages=[
                     {
                         "role": "user",
