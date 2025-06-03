@@ -2,3 +2,4 @@ fastapi
 openai
 aiohttp
 uvicorn
+pydantic
