@@ -78,7 +78,7 @@ async def rank_images(images, history_folder, water_well_name=None, max_selectio
             else:
                 mime_type = "image/jpeg"  # Default fallback
             
-            # Enhanced prompt with water well context
+            # Enhanced prompt with water well context and unique ranking requirement
             prompt = f"""Rank this image for importance to a donor for the {water_well_name or 'water well project'}. 
             Rate from 1-10 based on these priorities:
 
@@ -100,7 +100,9 @@ async def rank_images(images, history_folder, water_well_name=None, max_selectio
             - Landscape/environmental context
             - Technical aspects of well construction
 
-            Provide a score (1-10) and brief reason focusing on donor appeal and community impact."""
+            CRITICAL: When ranking multiple images in this batch, ensure each image gets a UNIQUE score from 1-10. No two images should have the same ranking number. Use your best judgment to differentiate between similar quality images.
+
+            Provide a score (1-10) and brief reason focusing on donor appeal and community impact. Format your response as: "Score: X - [reason]" where X is a unique number."""
             
             response = openai.chat.completions.create(
                 model="gpt-4o",
