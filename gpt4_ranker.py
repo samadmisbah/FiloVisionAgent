@@ -17,6 +17,9 @@ except ImportError:
 
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
+# Global cache for history examples
+_history_cache = {}
+
 async def download_image(url):
     try:
         async with aiohttp.ClientSession() as session:
@@ -46,6 +49,7 @@ async def get_history_examples(history_folder):
     """
     Get ranked example images from Google Drive history folder structure
     History folder contains subfolders (different wells), each with ranked images
+    Uses caching to avoid re-downloading same examples multiple times
     """
     if not history_folder or not GOOGLE_API_AVAILABLE:
         if not history_folder:
@@ -53,6 +57,11 @@ async def get_history_examples(history_folder):
         else:
             print("Google API not available - skipping history examples")
         return []
+    
+    # Check cache first
+    if history_folder in _history_cache:
+        print(f"Using cached history examples ({len(_history_cache[history_folder])} examples)")
+        return _history_cache[history_folder]
     
     try:
         print(f"Fetching history examples from: {history_folder}")
@@ -178,6 +187,11 @@ async def get_history_examples(history_folder):
                 print(f"❌ Error downloading {file_info['name']}: {e}")
         
         print(f"Successfully loaded {len(history_examples)} history examples from {len(set(ex['subfolder'] for ex in history_examples))} different wells")
+        
+        # Cache the results for future requests
+        _history_cache[history_folder] = history_examples
+        print(f"Cached {len(history_examples)} history examples for future use")
+        
         return history_examples
         
     except Exception as e:
