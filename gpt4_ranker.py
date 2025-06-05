@@ -283,8 +283,21 @@ async def rank_images(images, history_folder=None, water_well_name=None, max_sel
         else:
             history_context = f"\n\nIMPORTANT: This ranking should match the style and quality of images in the reference folder '{history_folder}'. Look for similar composition, subjects, and donor appeal factors that have been successful before."
     
+    # Build exact input mapping for validation
+    input_validation = "🔒 CRITICAL INPUT VALIDATION:\n"
+    input_validation += f"You received exactly {len(valid_images)} images. You MUST use these EXACT IDs and filenames:\n\n"
+    
+    for i, img in enumerate(valid_images):
+        input_validation += f"Image {i+1}: id=\"{img['id'][:20]}...\" filename=\"{img['filename']}\"\n"
+    
+    input_validation += f"\n❌ DO NOT create sequential IDs like \"1\", \"2\", \"3\"\n"
+    input_validation += f"❌ DO NOT modify, shorten, or change any filename\n"
+    input_validation += f"✅ USE the exact ID and filename from the list above\n\n"
+
     # MUCH SIMPLER PROMPT with history context
     simple_prompt = f"""You are ranking {len(valid_images)} images for a water well project.
+
+{input_validation}
 
 {history_context}
 
@@ -303,13 +316,13 @@ Other good elements:
 
 {f"After the reference examples, you will see the NEW images to rank. Apply the same quality standards you observe in the examples." if history_examples else ""}
 
-Respond with ONLY a JSON array like this:
+Respond with ONLY a JSON array using the EXACT IDs and filenames from the validation list above:
 [
   {{"id": "{valid_images[0]['id']}", "filename": "{valid_images[0]['filename']}", "priority": 1, "reason": "Short reason"}},
-  {{"id": "{valid_images[1]['id'] if len(valid_images) > 1 else 'example'}", "filename": "{valid_images[1]['filename'] if len(valid_images) > 1 else 'example.jpg'}", "priority": 2, "reason": "Short reason"}}
+  {{"id": "{valid_images[1]['id'] if len(valid_images) > 1 else 'EXAMPLE_ID'}", "filename": "{valid_images[1]['filename'] if len(valid_images) > 1 else 'EXAMPLE_FILENAME'}", "priority": 2, "reason": "Short reason"}}
 ]
 
-CRITICAL: Use the EXACT original filename provided. Do not modify, shorten, or change the filename in any way.
+🔒 VALIDATION CHECKPOINT: Before responding, verify each result uses an exact ID and filename from the validation list above.
 
 Use each priority number 1-{len(valid_images)} exactly once."""
 
