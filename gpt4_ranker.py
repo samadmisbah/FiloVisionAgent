@@ -11,11 +11,13 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 async def download_image(url):
     try:
         async with aiohttp.ClientSession() as session:
+            # Add headers to mimic a browser request
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
             async with session.get(url, headers=headers) as resp:
                 print(f"Download status: {resp.status} for {url}")
+                print(f"Content-Type: {resp.headers.get('content-type', 'unknown')}")
                 
                 if resp.status == 200:
                     content_type = resp.headers.get('content-type', '')
@@ -35,19 +37,16 @@ async def download_image(url):
 
 async def rank_images(images, history_folder=None, water_well_name=None, max_selections=10, **kwargs):
     """
-    NEW: Batch processing approach - rank ALL images together
+    Simplified batch processing with better JSON handling
     """
     
     # Extract enhanced payload parameters
     total_image_count = kwargs.get('total_image_count', len(images))
-    ranking_requirements = kwargs.get('ranking_requirements', {})
-    instructions = kwargs.get('instructions', '')
     
     print(f"=== VISION AGENT PROCESSING ===")
     print(f"Total images to rank: {total_image_count}")
     print(f"Water well: {water_well_name}")
     print(f"History folder: {history_folder}")
-    print(f"Enhanced instructions provided: {bool(instructions)}")
     
     # Download all images
     print("Downloading all images...")
@@ -114,46 +113,27 @@ async def rank_images(images, history_folder=None, water_well_name=None, max_sel
         print("No valid images to process!")
         return []
     
-    # NEW: Batch ranking prompt
-    batch_prompt = f"""You are ranking {len(valid_images)} images for a water well project: "{water_well_name}".
+    # SIMPLIFIED: Limit to 6 images max for batch processing to avoid token limits
+    if len(valid_images) > 6:
+        print(f"Too many images ({len(valid_images)}), processing first 6 only")
+        valid_images = valid_images[:6]
+    
+    # Simplified batch prompt for better JSON response
+    batch_prompt = f"""Rank these {len(valid_images)} water well images from 1 (worst) to {len(valid_images)} (best) for donor appeal.
 
-CRITICAL REQUIREMENTS:
-1. You MUST rank ALL {len(valid_images)} images with UNIQUE priority numbers from 1 to {len(valid_images)}
-2. Priority {len(valid_images)} = BEST image, Priority 1 = WORST image  
-3. NO duplicate priorities allowed
-4. You must return a JSON response with exactly {len(valid_images)} results
+CRITERIA:
+- High priority: Donor plaques, children using well, families, water flowing
+- Medium priority: Construction with community, leaders present
+- Low priority: Equipment, landscape, technical aspects
 
-RANKING CRITERIA (in order of importance):
-HIGH PRIORITY (best images):
-- Clear plaques with donor names prominently displayed
-- Children smiling while using or near the well
-- Families gathering around the completed well
-- Clear water flowing from the well demonstrating success
+Return ONLY this JSON format:
+[
+  {{"id": "image_id_1", "filename": "name1", "priority": 1, "reason": "Brief reason"}},
+  {{"id": "image_id_2", "filename": "name2", "priority": 2, "reason": "Brief reason"}},
+  {{"id": "image_id_3", "filename": "name3", "priority": 3, "reason": "Brief reason"}}
+]
 
-MEDIUM PRIORITY:
-- Well construction progress showing community involvement
-- Community leaders or elders present at the well
-- Educational signage about water safety or well maintenance
-- Before/after comparison showing transformation
-
-LOW PRIORITY:
-- General construction activities
-- Equipment or materials being delivered
-- Landscape/environmental context
-- Technical aspects of well construction
-
-RESPONSE FORMAT - Return valid JSON:
-{{
-  "total_images_processed": {len(valid_images)},
-  "water_well_name": "{water_well_name}",
-  "results": [
-    {{"id": "image_id", "filename": "image_name", "priority": 1, "score": 1.0, "reason": "Description"}},
-    {{"id": "image_id", "filename": "image_name", "priority": 2, "score": 2.0, "reason": "Description"}},
-    ...continue for all {len(valid_images)} images with unique priorities 1-{len(valid_images)}
-  ]
-}}
-
-Analyze all images and rank them from 1 (worst) to {len(valid_images)} (best) for donor appeal."""
+Use priorities 1 to {len(valid_images)} exactly once each."""
     
     # Prepare message with all images
     message_content = [{"type": "text", "text": batch_prompt}]
@@ -173,76 +153,114 @@ Analyze all images and rank them from 1 (worst) to {len(valid_images)} (best) fo
                 "role": "user",
                 "content": message_content
             }],
-            max_tokens=2000  # Increased for batch response
+            max_tokens=1500,
+            temperature=0.1  # Lower temperature for more consistent JSON
         )
         
         response_text = response.choices[0].message.content.strip()
-        print(f"OpenAI Response: {response_text[:500]}...")  # First 500 chars
+        print(f"OpenAI Response length: {len(response_text)} chars")
+        print(f"Response preview: {response_text[:200]}...")
         
-        # Parse JSON response
+        # Try to extract JSON from response
         try:
-            ranking_data = json.loads(response_text)
-            results = ranking_data.get("results", [])
+            # Look for JSON array in the response
+            json_start = response_text.find('[')
+            json_end = response_text.rfind(']') + 1
             
-            # Validate response
-            if len(results) != len(valid_images):
-                raise Exception(f"Expected {len(valid_images)} results, got {len(results)}")
-            
-            # Check for duplicate priorities
-            priorities = [r.get("priority") for r in results]
-            if len(set(priorities)) != len(priorities):
-                raise Exception("Duplicate priorities detected!")
-            
-            # Map results back to original indices and add failed images
-            final_results = []
-            
-            # Add successful rankings
-            for result in results:
-                final_results.append({
-                    "filename": result["filename"],
-                    "priority": result["priority"],
-                    "reason": result["reason"],
-                    "id": result["id"],
-                    "score": result.get("score", result["priority"])
-                })
-            
-            # Add failed images with priority 0
-            for failed in failed_images:
-                final_results.append({
-                    "filename": failed["filename"],
-                    "priority": 0,  # Lowest priority for failed images
-                    "reason": f"Failed to process: {failed['error']}",
-                    "id": failed["id"],
-                    "score": 0
-                })
-            
-            print(f"Successfully ranked {len(final_results)} images")
-            return final_results
-            
+            if json_start != -1 and json_end > json_start:
+                json_str = response_text[json_start:json_end]
+                print(f"Extracted JSON: {json_str[:200]}...")
+                
+                ranking_data = json.loads(json_str)
+                
+                if isinstance(ranking_data, list) and len(ranking_data) == len(valid_images):
+                    print(f"✅ Successfully parsed {len(ranking_data)} rankings")
+                    
+                    # Validate unique priorities
+                    priorities = [r.get("priority") for r in ranking_data]
+                    if len(set(priorities)) == len(priorities):
+                        print("✅ All priorities are unique")
+                        
+                        # Convert to final format
+                        final_results = []
+                        for result in ranking_data:
+                            final_results.append({
+                                "filename": result["filename"],
+                                "priority": result["priority"],
+                                "reason": result["reason"],
+                                "id": result["id"],
+                                "score": result["priority"]
+                            })
+                        
+                        # Add failed images with priority 0
+                        for failed in failed_images:
+                            final_results.append({
+                                "filename": failed["filename"],
+                                "priority": 0,
+                                "reason": f"Failed: {failed['error']}",
+                                "id": failed["id"],
+                                "score": 0
+                            })
+                        
+                        print(f"✅ Returning {len(final_results)} total results")
+                        return final_results
+                    else:
+                        raise Exception("Duplicate priorities found")
+                else:
+                    raise Exception(f"Expected {len(valid_images)} results, got {len(ranking_data) if isinstance(ranking_data, list) else 'non-list'}")
+            else:
+                raise Exception("No JSON array found in response")
+                
         except json.JSONDecodeError as e:
-            print(f"JSON parsing error: {e}")
-            print(f"Response was: {response_text}")
-            raise Exception("Invalid JSON response from OpenAI")
+            print(f"❌ JSON parsing error: {e}")
+            raise Exception(f"Invalid JSON: {str(e)}")
             
     except Exception as e:
-        print(f"Error in batch processing: {e}")
-        # Fallback: return simple sequential ranking
+        print(f"❌ Error in batch processing: {e}")
+        print(f"Full response was: {response_text if 'response_text' in locals() else 'No response'}")
+        
+        # IMPROVED FALLBACK: Use simple heuristic ranking
+        print("Using improved fallback ranking...")
         fallback_results = []
+        
         for i, img in enumerate(valid_images):
+            # Simple heuristic: images with certain keywords get higher priority
+            filename_lower = img["filename"].lower()
+            
+            # High priority keywords
+            if any(word in filename_lower for word in ['children', 'family', 'plaque', 'donor', 'celebration']):
+                base_priority = len(valid_images) - (i // 3)  # Top third
+            # Medium priority keywords  
+            elif any(word in filename_lower for word in ['community', 'group', 'ceremony', 'opening']):
+                base_priority = len(valid_images) // 2 + (i % 3)  # Middle
+            else:
+                base_priority = 1 + (i % 3)  # Lower priority
+            
+            # Ensure unique priorities
+            final_priority = max(1, min(len(valid_images), base_priority))
+            
             fallback_results.append({
                 "filename": img["filename"],
-                "priority": i + 1,  # Sequential priority
-                "reason": f"Fallback ranking #{i + 1} due to processing error: {str(e)}",
+                "priority": final_priority,
+                "reason": f"Heuristic ranking based on filename analysis. Error: {str(e)[:100]}",
                 "id": img["id"],
-                "score": i + 1
+                "score": final_priority
             })
+        
+        # Ensure unique priorities by adjusting duplicates
+        used_priorities = set()
+        for result in fallback_results:
+            original_priority = result["priority"]
+            while result["priority"] in used_priorities:
+                result["priority"] = result["priority"] + 1 if result["priority"] < len(valid_images) else 1
+            used_priorities.add(result["priority"])
         
         # Add failed images
         for failed in failed_images:
             fallback_results.append({
                 "filename": failed["filename"],
                 "priority": 0,
-                "reason": f"Failed to process: {failed['error']}",
+                "reason": f"Failed: {failed['error']}",
                 "id": failed["id"],
                 "score": 0
             })
