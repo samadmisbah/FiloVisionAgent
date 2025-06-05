@@ -236,7 +236,8 @@ async def rank_images(images, history_folder=None, water_well_name=None, max_sel
                 mime_type = "image/jpeg"
             
             valid_images.append({
-                "filename": images[i]["name"],
+                "filename": images[i]["name"],  # Keep original filename exactly
+                "original_filename": images[i]["name"],  # Store backup copy
                 "id": images[i].get("id", "unknown"),
                 "b64": img_b64,
                 "mime_type": mime_type
@@ -282,13 +283,15 @@ Best images usually show:
 - Donor recognition plaques
 - Families gathered around well
 
-{"After the reference examples, you will see the NEW images to rank. Apply the same quality standards you observe in the examples." if history_examples else ""}
+{f"After the reference examples, you will see the NEW images to rank. Apply the same quality standards you observe in the examples." if history_examples else ""}
 
 Respond with ONLY a JSON array like this:
 [
   {{"id": "{valid_images[0]['id']}", "filename": "{valid_images[0]['filename']}", "priority": 1, "reason": "Short reason"}},
   {{"id": "{valid_images[1]['id'] if len(valid_images) > 1 else 'example'}", "filename": "{valid_images[1]['filename'] if len(valid_images) > 1 else 'example.jpg'}", "priority": 2, "reason": "Short reason"}}
 ]
+
+CRITICAL: Use the EXACT original filename provided. Do not modify, shorten, or change the filename in any way.
 
 Use each priority number 1-{len(valid_images)} exactly once."""
 
@@ -335,10 +338,15 @@ Use each priority number 1-{len(valid_images)} exactly once."""
             all_results = json.loads(json_str)
             
             if len(all_results) == len(valid_images):
-                # Add score field
-                for result in all_results:
+                # Add score field and validate filenames
+                for i, result in enumerate(all_results):
                     result['score'] = result['priority']
-                
+                    
+                    # Ensure we have the original filename
+                    if 'filename' not in result or not result['filename']:
+                        result['filename'] = valid_images[i]['original_filename']
+                        print(f"⚠️ Fixed missing filename for result {i}")
+                    
                 print(f"✅ Successfully processed all {len(all_results)} images")
             else:
                 raise Exception(f"Expected {len(valid_images)} results, got {len(all_results)}")
@@ -347,11 +355,11 @@ Use each priority number 1-{len(valid_images)} exactly once."""
             
     except Exception as e:
         print(f"❌ Processing failed: {e}")
-        # Simple fallback
+        # Simple fallback - ensure original filenames are preserved
         all_results = []
         for i, img in enumerate(valid_images):
             all_results.append({
-                "filename": img["filename"],
+                "filename": img["original_filename"],  # Use exact original filename
                 "priority": i + 1,
                 "reason": f"Fallback ranking due to error: {str(e)[:50]}",
                 "id": img["id"],
