@@ -290,12 +290,16 @@ async def rank_images(images, history_folder=None, water_well_name=None, max_sel
 
 Rank from 1 (least donor appeal) to {len(valid_images)} (most donor appeal).
 
-Best images usually show:
-- Children using/enjoying the well
-- Community celebrating  
+PRIORITY SCORING GUIDE:
+🥇 PERFECT 10/10 (Highest Priority): Donor plaque is FULLY VISIBLE with ALL text clearly legible + happy children actively using the well + excellent composition and lighting.
+
+🥈 EXCELLENT 9/10 (Second Priority): Happy children actively using/celebrating around the well + genuine joyful interaction + good quality, but plaque may be partially visible or not the focal point.
+
+Other good elements:
 - Clear water flowing
-- Donor recognition plaques
-- Families gathered around well
+- Community gathering
+- Families around well
+- Well functionality shown
 
 {f"After the reference examples, you will see the NEW images to rank. Apply the same quality standards you observe in the examples." if history_examples else ""}
 
