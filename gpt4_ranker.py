@@ -283,16 +283,18 @@ async def rank_images(images, history_folder=None, water_well_name=None, max_sel
         else:
             history_context = f"\n\nIMPORTANT: This ranking should match the style and quality of images in the reference folder '{history_folder}'. Look for similar composition, subjects, and donor appeal factors that have been successful before."
     
-    # Build exact input mapping for validation
+    # Build exact input mapping for validation - SHOW FULL IDs
     input_validation = "🔒 CRITICAL INPUT VALIDATION:\n"
     input_validation += f"You received exactly {len(valid_images)} images. You MUST use these EXACT IDs and filenames:\n\n"
     
     for i, img in enumerate(valid_images):
-        input_validation += f"Image {i+1}: id=\"{img['id'][:20]}...\" filename=\"{img['filename']}\"\n"
+        input_validation += f"Image {i+1}: id=\"{img['id']}\" filename=\"{img['filename']}\"\n"
     
     input_validation += f"\n❌ DO NOT create sequential IDs like \"1\", \"2\", \"3\"\n"
+    input_validation += f"❌ DO NOT modify, shorten, truncate, or change any ID\n"
     input_validation += f"❌ DO NOT modify, shorten, or change any filename\n"
-    input_validation += f"✅ USE the exact ID and filename from the list above\n\n"
+    input_validation += f"✅ USE the exact FULL ID and filename from the list above\n"
+    input_validation += f"✅ Copy the ID character-for-character exactly as shown\n\n"
 
     # MUCH SIMPLER PROMPT with history context
     simple_prompt = f"""You are ranking {len(valid_images)} images for a water well project.
@@ -369,6 +371,18 @@ Use each priority number 1-{len(valid_images)} exactly once."""
             all_results = json.loads(json_str)
             
             if len(all_results) == len(valid_images):
+                # CRITICAL: Validate IDs match exactly
+                input_ids = {img['id'] for img in valid_images}
+                output_ids = {result['id'] for result in all_results}
+                
+                if input_ids != output_ids:
+                    print(f"❌ ID MISMATCH DETECTED!")
+                    print(f"Expected IDs: {sorted(list(input_ids))}")
+                    print(f"Received IDs: {sorted(list(output_ids))}")
+                    print(f"Missing IDs: {input_ids - output_ids}")
+                    print(f"Extra IDs: {output_ids - input_ids}")
+                    raise Exception("Vision Agent corrupted the Google Drive IDs!")
+                
                 # Add score field and validate filenames
                 for i, result in enumerate(all_results):
                     result['score'] = result['priority']
@@ -377,8 +391,8 @@ Use each priority number 1-{len(valid_images)} exactly once."""
                     if 'filename' not in result or not result['filename']:
                         result['filename'] = valid_images[i]['original_filename']
                         print(f"⚠️ Fixed missing filename for result {i}")
-                    
-                print(f"✅ Successfully processed all {len(all_results)} images")
+                
+                print(f"✅ Successfully processed all {len(all_results)} images with valid IDs")
             else:
                 raise Exception(f"Expected {len(valid_images)} results, got {len(all_results)}")
         else:
