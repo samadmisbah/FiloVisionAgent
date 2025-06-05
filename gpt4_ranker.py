@@ -6,18 +6,25 @@ import base64
 import re
 import json
 
+# Add Google API imports
+try:
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
+    GOOGLE_API_AVAILABLE = True
+except ImportError:
+    print("Google API client not available - history folder features disabled")
+    GOOGLE_API_AVAILABLE = False
+
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
 async def download_image(url):
     try:
         async with aiohttp.ClientSession() as session:
-            # Add headers to mimic a browser request
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
             async with session.get(url, headers=headers) as resp:
                 print(f"Download status: {resp.status} for {url}")
-                print(f"Content-Type: {resp.headers.get('content-type', 'unknown')}")
                 
                 if resp.status == 200:
                     content_type = resp.headers.get('content-type', '')
@@ -35,51 +42,188 @@ async def download_image(url):
         print(f"Download error: {e}")
         return None
 
+async def get_history_examples(history_folder):
+    """
+    Get ranked example images from Google Drive history folder structure
+    History folder contains subfolders (different wells), each with ranked images
+    """
+    if not history_folder or not GOOGLE_API_AVAILABLE:
+        if not history_folder:
+            print("No history folder provided")
+        else:
+            print("Google API not available - skipping history examples")
+        return []
+    
+    try:
+        print(f"Fetching history examples from: {history_folder}")
+        
+        # Extract folder ID if it's a full URL
+        folder_id = history_folder
+        if 'folders/' in history_folder:
+            folder_id = history_folder.split('folders/')[-1]
+        elif 'id=' in history_folder:
+            folder_id = history_folder.split('id=')[-1]
+        
+        print(f"History parent folder ID: {folder_id}")
+        
+        # Set up Google Drive API service
+        credentials_json = os.getenv('GOOGLE_SERVICE_ACCOUNT_JSON')
+        if not credentials_json:
+            print("No Google service account credentials found")
+            return []
+        
+        # Parse credentials
+        credentials_dict = json.loads(credentials_json)
+        credentials = service_account.Credentials.from_service_account_info(
+            credentials_dict,
+            scopes=['https://www.googleapis.com/auth/drive.readonly']
+        )
+        
+        # Build the Drive service
+        drive_service = build('drive', 'v3', credentials=credentials)
+        
+        print("Listing subfolders in history folder...")
+        
+        # First, get all subfolders in the history folder
+        subfolders_results = drive_service.files().list(
+            q=f"'{folder_id}' in parents and trashed=false and mimeType='application/vnd.google-apps.folder'",
+            fields='files(id,name)',
+            pageSize=50
+        ).execute()
+        
+        subfolders = subfolders_results.get('files', [])
+        print(f"Found {len(subfolders)} subfolders in history folder")
+        
+        # Collect all ranked files from all subfolders
+        all_ranked_files = {}
+        
+        for subfolder in subfolders:
+            subfolder_id = subfolder['id']
+            subfolder_name = subfolder['name']
+            print(f"Checking subfolder: {subfolder_name}")
+            
+            # List files in this subfolder
+            files_results = drive_service.files().list(
+                q=f"'{subfolder_id}' in parents and trashed=false",
+                fields='files(id,name)',
+                pageSize=100
+            ).execute()
+            
+            files = files_results.get('files', [])
+            
+            # Find ranked files in this subfolder
+            for file in files:
+                filename = file['name'].lower()
+                # Look for pattern like _1_, _2_, _10_, etc.
+                import re
+                match = re.match(r'^_(\d+)_', filename)
+                if match:
+                    rank_num = int(match.group(1))
+                    # Check if it's an image
+                    image_extensions = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff']
+                    extension = filename.split('.')[-1] if '.' in filename else ''
+                    if extension in image_extensions:
+                        # Store with rank as key (will naturally override duplicates with latest found)
+                        all_ranked_files[rank_num] = {
+                            'id': file['id'],
+                            'name': file['name'],
+                            'rank': rank_num,
+                            'subfolder': subfolder_name,
+                            'url': f"https://drive.google.com/uc?id={file['id']}&export=view"
+                        }
+                        print(f"Found ranked example: _{rank_num}_ - {file['name']} (from {subfolder_name})")
+        
+        # Sort by rank and take up to 10 examples
+        sorted_ranks = sorted(all_ranked_files.keys())[:10]
+        target_files = [all_ranked_files[rank] for rank in sorted_ranks]
+        
+        if not target_files:
+            print("No ranked example files found in any history subfolders")
+            return []
+        
+        print(f"Downloading {len(target_files)} history examples (ranks {sorted_ranks})...")
+        
+        # Download the example images
+        history_examples = []
+        for file_info in target_files:
+            try:
+                img_bytes = await download_image(file_info['url'])
+                if img_bytes and len(img_bytes) > 100:
+                    # Convert to base64
+                    img_b64 = base64.b64encode(img_bytes).decode('utf-8')
+                    
+                    # Determine MIME type
+                    if img_bytes.startswith(b'\xff\xd8\xff'):
+                        mime_type = "image/jpeg"
+                    elif img_bytes.startswith(b'\x89PNG'):
+                        mime_type = "image/png"
+                    elif img_bytes.startswith(b'GIF'):
+                        mime_type = "image/gif"
+                    elif img_bytes.startswith(b'RIFF'):
+                        mime_type = "image/webp"
+                    else:
+                        mime_type = "image/jpeg"
+                    
+                    history_examples.append({
+                        'name': file_info['name'],
+                        'rank': file_info['rank'],
+                        'subfolder': file_info['subfolder'],
+                        'b64': img_b64,
+                        'mime_type': mime_type
+                    })
+                    print(f"✅ Downloaded history example: {file_info['name']} (rank {file_info['rank']})")
+                else:
+                    print(f"❌ Failed to download: {file_info['name']}")
+            except Exception as e:
+                print(f"❌ Error downloading {file_info['name']}: {e}")
+        
+        print(f"Successfully loaded {len(history_examples)} history examples from {len(set(ex['subfolder'] for ex in history_examples))} different wells")
+        return history_examples
+        
+    except Exception as e:
+        print(f"Error accessing history folder: {e}")
+        return []
+
 async def rank_images(images, history_folder=None, water_well_name=None, max_selections=10, **kwargs):
     """
-    Simplified batch processing with better JSON handling
+    Simple, focused ranking with history folder examples
     """
     
-    # Extract enhanced payload parameters
     total_image_count = kwargs.get('total_image_count', len(images))
     
-    print(f"=== VISION AGENT PROCESSING ===")
-    print(f"Total images to rank: {total_image_count}")
+    print(f"=== SIMPLE VISION RANKING ===")
     print(f"Water well: {water_well_name}")
+    print(f"Total images: {total_image_count}")
     print(f"History folder: {history_folder}")
     
-    # Download all images
+    # Download all images (no artificial limits)
     print("Downloading all images...")
     tasks = [download_image(img["url"]) for img in images]
     raw_images = await asyncio.gather(*tasks)
     
-    # Prepare images for batch analysis
+    # Process images
     valid_images = []
     failed_images = []
     
     for i, img_bytes in enumerate(raw_images):
         if not img_bytes or len(img_bytes) < 100:
             failed_images.append({
-                "index": i,
                 "filename": images[i]["name"], 
                 "id": images[i].get("id", "unknown"),
-                "error": "Failed to download or invalid image"
+                "priority": 0,
+                "reason": "Failed to download",
+                "score": 0
             })
             continue
             
         try:
-            # Validate image format
-            if not (img_bytes.startswith(b'\xff\xd8\xff') or  # JPEG
-                   img_bytes.startswith(b'\x89PNG') or        # PNG
-                   img_bytes.startswith(b'GIF87a') or         # GIF
-                   img_bytes.startswith(b'GIF89a') or         # GIF
-                   img_bytes.startswith(b'RIFF')):            # WebP
+            # Validate and convert image
+            if not (img_bytes.startswith(b'\xff\xd8\xff') or img_bytes.startswith(b'\x89PNG') or 
+                   img_bytes.startswith(b'GIF') or img_bytes.startswith(b'RIFF')):
                 raise Exception("Invalid image format")
             
-            # Convert to base64
             img_b64 = base64.b64encode(img_bytes).decode('utf-8')
             
-            # Determine MIME type
             if img_bytes.startswith(b'\xff\xd8\xff'):
                 mime_type = "image/jpeg"
             elif img_bytes.startswith(b'\x89PNG'):
@@ -92,7 +236,6 @@ async def rank_images(images, history_folder=None, water_well_name=None, max_sel
                 mime_type = "image/jpeg"
             
             valid_images.append({
-                "index": i,
                 "filename": images[i]["name"],
                 "id": images[i].get("id", "unknown"),
                 "b64": img_b64,
@@ -101,44 +244,67 @@ async def rank_images(images, history_folder=None, water_well_name=None, max_sel
             
         except Exception as e:
             failed_images.append({
-                "index": i,
                 "filename": images[i]["name"],
-                "id": images[i].get("id", "unknown"), 
-                "error": str(e)
+                "id": images[i].get("id", "unknown"),
+                "priority": 0,
+                "reason": f"Processing error: {str(e)}",
+                "score": 0
             })
     
     print(f"Valid images: {len(valid_images)}, Failed: {len(failed_images)}")
     
     if not valid_images:
-        print("No valid images to process!")
-        return []
+        return failed_images
     
-    # SIMPLIFIED: Limit to 6 images max for batch processing to avoid token limits
-    if len(valid_images) > 6:
-        print(f"Too many images ({len(valid_images)}), processing first 6 only")
-        valid_images = valid_images[:6]
+    # Get history context and examples
+    history_examples = await get_history_examples(history_folder)
+    history_context = ""
     
-    # Simplified batch prompt for better JSON response
-    batch_prompt = f"""Rank these {len(valid_images)} water well images from 1 (worst) to {len(valid_images)} (best) for donor appeal.
+    if history_folder:
+        if history_examples:
+            num_examples = len(history_examples)
+            wells_represented = len(set(ex['subfolder'] for ex in history_examples))
+            history_context = f"\n\nIMPORTANT REFERENCE EXAMPLES:\nThe first {num_examples} images below are RANKED examples from {wells_represented} different water wells in your history folder. These show the COMPLETE QUALITY SPECTRUM from best (rank 1) to lower ranks that donors prefer. Study the full ranking pattern and apply the same quality standards to rank the NEW images (shown after the examples).\n\n"
+        else:
+            history_context = f"\n\nIMPORTANT: This ranking should match the style and quality of images in the reference folder '{history_folder}'. Look for similar composition, subjects, and donor appeal factors that have been successful before."
+    
+    # MUCH SIMPLER PROMPT with history context
+    simple_prompt = f"""You are ranking {len(valid_images)} images for a water well project.
 
-CRITERIA:
-- High priority: Donor plaques, children using well, families, water flowing
-- Medium priority: Construction with community, leaders present
-- Low priority: Equipment, landscape, technical aspects
+{history_context}
 
-Return ONLY this JSON format:
+Rank from 1 (least donor appeal) to {len(valid_images)} (most donor appeal).
+
+Best images usually show:
+- Children using/enjoying the well
+- Community celebrating  
+- Clear water flowing
+- Donor recognition plaques
+- Families gathered around well
+
+{"After the reference examples, you will see the NEW images to rank. Apply the same quality standards you observe in the examples." if history_examples else ""}
+
+Respond with ONLY a JSON array like this:
 [
-  {{"id": "image_id_1", "filename": "name1", "priority": 1, "reason": "Brief reason"}},
-  {{"id": "image_id_2", "filename": "name2", "priority": 2, "reason": "Brief reason"}},
-  {{"id": "image_id_3", "filename": "name3", "priority": 3, "reason": "Brief reason"}}
+  {{"id": "{valid_images[0]['id']}", "filename": "{valid_images[0]['filename']}", "priority": 1, "reason": "Short reason"}},
+  {{"id": "{valid_images[1]['id'] if len(valid_images) > 1 else 'example'}", "filename": "{valid_images[1]['filename'] if len(valid_images) > 1 else 'example.jpg'}", "priority": 2, "reason": "Short reason"}}
 ]
 
-Use priorities 1 to {len(valid_images)} exactly once each."""
+Use each priority number 1-{len(valid_images)} exactly once."""
+
+    # Process all images at once
+    message_content = [{"type": "text", "text": simple_prompt}]
     
-    # Prepare message with all images
-    message_content = [{"type": "text", "text": batch_prompt}]
+    # Add history examples first if available
+    if history_examples:
+        print(f"Adding {len(history_examples)} history examples to prompt")
+        for example in history_examples:
+            message_content.append({
+                "type": "image_url", 
+                "image_url": {"url": f"data:{example['mime_type']};base64,{example['b64']}"}
+            })
     
-    # Add all images to the message
+    # Then add the images to be ranked
     for img in valid_images:
         message_content.append({
             "type": "image_url", 
@@ -146,126 +312,57 @@ Use priorities 1 to {len(valid_images)} exactly once each."""
         })
     
     try:
-        print("Sending batch request to OpenAI...")
+        print(f"Sending all {len(valid_images)} images to OpenAI...")
+        if history_examples:
+            print(f"Including {len(history_examples)} history examples as reference")
+            
         response = openai.chat.completions.create(
             model="gpt-4o",
-            messages=[{
-                "role": "user",
-                "content": message_content
-            }],
-            max_tokens=1500,
-            temperature=0.1  # Lower temperature for more consistent JSON
+            messages=[{"role": "user", "content": message_content}],
+            max_tokens=2000,
+            temperature=0.1
         )
         
         response_text = response.choices[0].message.content.strip()
-        print(f"OpenAI Response length: {len(response_text)} chars")
-        print(f"Response preview: {response_text[:200]}...")
+        print(f"Response preview: {response_text[:100]}...")
         
-        # Try to extract JSON from response
-        try:
-            # Look for JSON array in the response
-            json_start = response_text.find('[')
-            json_end = response_text.rfind(']') + 1
+        # Extract JSON
+        json_start = response_text.find('[')
+        json_end = response_text.rfind(']') + 1
+        
+        if json_start != -1 and json_end > json_start:
+            json_str = response_text[json_start:json_end]
+            all_results = json.loads(json_str)
             
-            if json_start != -1 and json_end > json_start:
-                json_str = response_text[json_start:json_end]
-                print(f"Extracted JSON: {json_str[:200]}...")
+            if len(all_results) == len(valid_images):
+                # Add score field
+                for result in all_results:
+                    result['score'] = result['priority']
                 
-                ranking_data = json.loads(json_str)
-                
-                if isinstance(ranking_data, list) and len(ranking_data) == len(valid_images):
-                    print(f"✅ Successfully parsed {len(ranking_data)} rankings")
-                    
-                    # Validate unique priorities
-                    priorities = [r.get("priority") for r in ranking_data]
-                    if len(set(priorities)) == len(priorities):
-                        print("✅ All priorities are unique")
-                        
-                        # Convert to final format
-                        final_results = []
-                        for result in ranking_data:
-                            final_results.append({
-                                "filename": result["filename"],
-                                "priority": result["priority"],
-                                "reason": result["reason"],
-                                "id": result["id"],
-                                "score": result["priority"]
-                            })
-                        
-                        # Add failed images with priority 0
-                        for failed in failed_images:
-                            final_results.append({
-                                "filename": failed["filename"],
-                                "priority": 0,
-                                "reason": f"Failed: {failed['error']}",
-                                "id": failed["id"],
-                                "score": 0
-                            })
-                        
-                        print(f"✅ Returning {len(final_results)} total results")
-                        return final_results
-                    else:
-                        raise Exception("Duplicate priorities found")
-                else:
-                    raise Exception(f"Expected {len(valid_images)} results, got {len(ranking_data) if isinstance(ranking_data, list) else 'non-list'}")
+                print(f"✅ Successfully processed all {len(all_results)} images")
             else:
-                raise Exception("No JSON array found in response")
-                
-        except json.JSONDecodeError as e:
-            print(f"❌ JSON parsing error: {e}")
-            raise Exception(f"Invalid JSON: {str(e)}")
+                raise Exception(f"Expected {len(valid_images)} results, got {len(all_results)}")
+        else:
+            raise Exception("No JSON found in response")
             
     except Exception as e:
-        print(f"❌ Error in batch processing: {e}")
-        print(f"Full response was: {response_text if 'response_text' in locals() else 'No response'}")
-        
-        # IMPROVED FALLBACK: Use simple heuristic ranking
-        print("Using improved fallback ranking...")
-        fallback_results = []
-        
+        print(f"❌ Processing failed: {e}")
+        # Simple fallback
+        all_results = []
         for i, img in enumerate(valid_images):
-            # Simple heuristic: images with certain keywords get higher priority
-            filename_lower = img["filename"].lower()
-            
-            # High priority keywords
-            if any(word in filename_lower for word in ['children', 'family', 'plaque', 'donor', 'celebration']):
-                base_priority = len(valid_images) - (i // 3)  # Top third
-            # Medium priority keywords  
-            elif any(word in filename_lower for word in ['community', 'group', 'ceremony', 'opening']):
-                base_priority = len(valid_images) // 2 + (i % 3)  # Middle
-            else:
-                base_priority = 1 + (i % 3)  # Lower priority
-            
-            # Ensure unique priorities
-            final_priority = max(1, min(len(valid_images), base_priority))
-            
-            fallback_results.append({
+            all_results.append({
                 "filename": img["filename"],
-                "priority": final_priority,
-                "reason": f"Heuristic ranking based on filename analysis. Error: {str(e)[:100]}",
+                "priority": i + 1,
+                "reason": f"Fallback ranking due to error: {str(e)[:50]}",
                 "id": img["id"],
-                "score": final_priority
+                "score": i + 1
             })
-        
-        # Ensure unique priorities by adjusting duplicates
-        used_priorities = set()
-        for result in fallback_results:
-            original_priority = result["priority"]
-            while result["priority"] in used_priorities:
-                result["priority"] = result["priority"] + 1 if result["priority"] < len(valid_images) else 1
-            used_priorities.add(result["priority"])
-        
-        # Add failed images
-        for failed in failed_images:
-            fallback_results.append({
-                "filename": failed["filename"],
-                "priority": 0,
-                "reason": f"Failed: {failed['error']}",
-                "id": failed["id"],
-                "score": 0
-            })
-        
-        return fallback_results
+    
+    # Add failed images
+    all_results.extend(failed_images)
+    
+    print(f"✅ Total results: {len(all_results)}")
+    return all_results
 
 def extract_score_from_caption(caption):
     """Extract numeric score from GPT response"""
