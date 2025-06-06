@@ -77,6 +77,8 @@ You are ranking {len(images)} water well images for donor appeal. Assign a uniqu
 {len(images)-1} → Best image for `_2_`
 1 → Worst image in batch (static, joyless, poor visibility)
 
+📎 CRITICAL: Do NOT modify filenames. Always return the exact `filename` field from the input list, unaltered. Never invent names like "image.jpg".
+
 Respond with JSON array only:
 [
   {{
