@@ -33,7 +33,6 @@ async def get_history_examples(folder_id):
     if not GOOGLE_API_AVAILABLE:
         return ""
     try:
-        # Placeholder: insert real Google Drive logic if needed
         return "Past successful images show donor plaque clearly and joyful children interacting with water."
     except Exception as e:
         print(f"History example error: {e}")
@@ -64,7 +63,7 @@ You are ranking {len(images)} water well images for donor appeal. Assign a uniqu
 - Natural joy and expressive faces
 - Clean background, clear lighting
 
-❌ Rank lower (3–10):
+❌ Rank lower (3–{len(images)}):
 - No water flow or joy
 - Faces are turned, bored, or unclear
 - Plaque cut off or out of frame
@@ -75,7 +74,7 @@ You are ranking {len(images)} water well images for donor appeal. Assign a uniqu
 {len(images)-1} → Best image for `_2_`
 1 → Worst image in batch (static, joyless, poor visibility)
 
-Respond with JSON array only:
+Return only a strict JSON array:
 [
   {{
     "id": "image-id",
@@ -87,7 +86,6 @@ Respond with JSON array only:
 ]
 """
 
-    # Build Vision API request
     message_content = [{"type": "text", "text": prompt}]
     for img in images:
         try:
