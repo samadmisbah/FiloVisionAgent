@@ -1,44 +1,3 @@
-import aiohttp
-import asyncio
-import os
-import base64
-import re
-import json
-from openai import AsyncOpenAI
-
-# Optional Google API setup (disabled unless configured)
-try:
-    from google.oauth2 import service_account
-    from googleapiclient.discovery import build
-    GOOGLE_API_AVAILABLE = True
-except ImportError:
-    GOOGLE_API_AVAILABLE = False
-
-client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-async def download_image(url):
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as resp:
-                if resp.status == 200:
-                    content_type = resp.headers.get('content-type', '')
-                    if 'image' in content_type.lower():
-                        return await resp.read()
-        return None
-    except Exception as e:
-        print(f"Download error: {e}")
-        return None
-
-async def get_history_examples(folder_id):
-    if not GOOGLE_API_AVAILABLE:
-        return ""
-    try:
-        # Placeholder: insert real Google Drive logic if needed
-        return "Past successful images show donor plaque clearly and joyful children interacting with water."
-    except Exception as e:
-        print(f"History example error: {e}")
-        return ""
-
 async def rank_images(images, history_folder=None, water_well_name=None, max_selections=10, **kwargs):
     if not images:
         return {"error": "No valid images provided"}
@@ -50,48 +9,77 @@ async def rank_images(images, history_folder=None, water_well_name=None, max_sel
             folder_id = folder_match.group(1)
             history_context = await get_history_examples(folder_id)
 
+    # Create a mapping of input images for validation - CRITICAL for filename preservation
+    input_images_map = {}
+    for i, img in enumerate(images):
+        original_name = img.get('name', img.get('filename', f'unknown_image_{i}'))
+        input_images_map[str(i+1)] = {
+            'original_name': original_name,
+            'id': img.get('id', f'unknown_id_{i}'),
+            'url': img.get('url', '')
+        }
+    
     prompt = f"""
-You will ONLY return a strict JSON array output — no explanation, no preamble.
+🚨 CRITICAL FILENAME PRESERVATION RULES:
+You are receiving {len(images)} images. For each image, you MUST use the EXACT filename provided.
 
-You are ranking {len(images)} water well images for donor appeal.
-Assign a unique `priority` from 1 (worst) to {len(images)} (best), using each number once.
+INPUT IMAGE MAPPING (DO NOT DEVIATE):
+{chr(10).join([f"Image {idx}: filename='{data['original_name']}', id='{data['id']}'" for idx, data in input_images_map.items()])}
 
-🎯 GOAL: Identify the **top 2 donor images**:
-- `_1_`: clearest plaque WITH children who are smiling, happy, or joyful — ideally around the plaque. Do NOT select a plaque-only image even if it's the clearest plaque. There must be joyful children around it for _1_.
-- `_2_`: joyful interaction with water (children splashing, smiling, visibly enjoying)
+❌ FORBIDDEN: Never use generic names like "image1.jpg", "image2.jpg", "photo1.jpg"
+✅ REQUIRED: Use the exact filename from the mapping above
 
-🧠 RANKING RULES:
-✅ Rank highest:
-- Children directly playing with water or holding containers
-- Plaque is readable and framed well WITH children smiling
-- Natural joy and expressive faces
-- Clean background, clear lighting
+🎯 RANKING MISSION:
+You are ranking {len(images)} water well images for maximum donor appeal.
+Assign priorities from 1 to {len(images)} where:
+- Priority {len(images)} = BEST image (will become _1_ in final naming)
+- Priority {len(images)-1} = SECOND BEST image (will become _2_ in final naming)
+- Priority 1 = WORST image (will become _{len(images)}_ in final naming)
 
-❌ Rank lower (3–10):
-- No water flow or joy
-- Faces are turned, bored, or unclear
-- Plaque cut off or out of frame
-- Plaque only without children should never be _1_
-- Crowded, blurry, redundant, or awkward composition
+🏆 TOP PRIORITY CRITERIA (for highest rankings):
+1. **Priority {len(images)} (Future _1_)**: 
+   - Donor plaque is clearly visible AND readable
+   - Children are present, smiling, and engaged around the plaque
+   - Natural joy and authentic expressions
+   - Good lighting and composition
+   - NEVER select plaque-only images for top priority
 
-🧪 Priority Definitions:
-{len(images)} → Best image for `_1_`
-{len(images)-1} → Best image for `_2_`
-1 → Worst image in batch (static, joyless, poor visibility)
+2. **Priority {len(images)-1} (Future _2_)**:
+   - Active water interaction (children playing, drinking, collecting water)
+   - Visible joy and excitement about water access
+   - Clear action shots showing water flow
+   - Engaging composition with happy subjects
 
-📎 CRITICAL: Do NOT modify filenames. Always return the exact `filename` field from the input list, unaltered. Never invent names like "image.jpg".
+📉 LOWER PRIORITY INDICATORS:
+- Static poses or forced smiles
+- Blurry or poorly lit images
+- Plaque unreadable or partially obscured
+- No visible water interaction
+- Boring or repetitive compositions
+- Technical issues (overexposed, underexposed, motion blur)
 
-Respond with ONLY a valid JSON array. Do not explain anything else.
+🔒 OUTPUT FORMAT REQUIREMENTS:
+Return ONLY a valid JSON array with this exact structure:
 
 [
   {{
-    "id": "image-id",
-    "filename": "EXACT_FILENAME_FROM_INPUT.jpg",
-    "priority": 1,
-    "reason": "Short visual justification"
-  }},
-  ...
+    "id": "exact_image_id_from_input",
+    "filename": "EXACT_FILENAME_FROM_INPUT_LIST",
+    "priority": INTEGER_FROM_1_TO_{len(images)},
+    "reason": "Brief justification (max 50 chars)"
+  }}
 ]
+
+🛡️ VALIDATION CHECKLIST:
+- Each filename exists in input list: {list(input_filenames.keys())}
+- All priorities 1-{len(images)} used exactly once
+- No explanatory text outside JSON array
+- All required fields present for each image
+
+Water well context: {water_well_name or 'Unknown location'}
+{f"Historical context: {history_context}" if history_context else ""}
+
+RESPOND WITH ONLY THE JSON ARRAY - NO OTHER TEXT.
 """
 
     # Build Vision API request
@@ -129,12 +117,44 @@ Respond with ONLY a valid JSON array. Do not explain anything else.
 
         result = json.loads(match.group(0))
 
-        # Validate unique priorities
+        # Enhanced validation - check against the mapping
+        if not isinstance(result, list) or len(result) != len(images):
+            return {"error": f"Expected {len(images)} results, got {len(result)}"}
+
+        # Validate priorities are unique and complete
         priorities = [item.get("priority") for item in result]
-        expected = list(range(1, len(images) + 1))
-        if sorted(priorities) != expected:
-            return {"error": "Priority numbers missing or duplicated", "priorities": priorities}
+        expected_priorities = list(range(1, len(images) + 1))
+        if sorted(priorities) != expected_priorities:
+            return {"error": "Priority numbers missing or duplicated", 
+                   "expected": expected_priorities, "received": sorted(priorities)}
+
+        # CRITICAL: Validate filenames and IDs match input mapping exactly
+        for item in result:
+            returned_filename = item.get("filename", "")
+            returned_id = item.get("id", "")
+            
+            # Find if this filename exists in our input mapping
+            filename_found = False
+            for img_key, img_data in input_images_map.items():
+                if img_data['original_name'] == returned_filename and img_data['id'] == returned_id:
+                    filename_found = True
+                    break
+            
+            if not filename_found:
+                return {"error": f"Vision Agent returned invalid filename/id combo: filename='{returned_filename}', id='{returned_id}'", 
+                       "expected_mapping": input_images_map,
+                       "returned_items": result}
+
+        # Validate required fields
+        for item in result:
+            required_fields = ["id", "filename", "priority", "reason"]
+            missing_fields = [field for field in required_fields if field not in item]
+            if missing_fields:
+                return {"error": f"Missing required fields: {missing_fields}"}
 
         return result
+        
+    except json.JSONDecodeError as e:
+        return {"error": f"JSON parsing failed: {e}", "raw_response": text}
     except Exception as e:
-        return {"error": f"Result parsing failed: {e}"}
+        return {"error": f"Result processing failed: {e}"}
