@@ -137,31 +137,36 @@ Use these successful examples as reference for what donors find most appealing.
             print("❌ Google API not available for history processing")
         history_context = ""
 
-    # ENHANCED PROMPT with explicit filename mapping
+    # ENHANCED PROMPT with explicit filename mapping and CRITICAL RULES
     enhanced_prompt = f"""You are ranking {len(valid_images)} images from a water well project for donor appeal.
 
 {input_validation}
 
 {history_context}
 
+🚨 CRITICAL RULE: NEVER rank a water well by itself (no children visible) as Priority {len(valid_images)}. Images with ONLY the water well structure and NO children must be ranked 3 or lower.
+
 🎯 GOAL: Identify the **top 2 donor images**:
-- Priority {len(valid_images)} (becomes _1_): clearest plaque WITH children who are smiling, happy, or joyful — ideally around the plaque. Do NOT select a plaque-only image even if it's the clearest plaque. There must be joyful children around it for top priority.
+- Priority {len(valid_images)} (becomes _1_): MUST have both readable plaque AND joyful children visible in the same frame. If no image has both plaque + children, choose the image with happiest children interacting with water.
 - Priority {len(valid_images)-1} (becomes _2_): joyful interaction with water (children splashing, smiling, visibly enjoying)
 
 You must assign a **priority score** to each image from 1 (lowest donor appeal) to {len(valid_images)} (highest donor appeal), using each number exactly once.
 
 📊 DETAILED RANKING GUIDE (Donor Visual Preference):
 
-🥇 {len(valid_images)}/10 — Plaque fully readable with donor name + joyful children in front holding water containers, excellent framing and lighting.  
-🥈 {len(valid_images)-1}/10 — Happy children playing with or splashing water; very lively, natural joy, good clarity.  
-🥉 {max(1, len(valid_images)-2)}/10 — Children operating the pump with clear water flow and happy expressions, medium-range framing.  
-7/10 — Children actively filling pots from the pump; visible water and full-body shots, slightly less vibrant.  
-6/10 — Kids drinking and filling simultaneously, joyful but cluttered or minor visibility issues.  
-5/10 — Drinking from hands or group joy, but lighting or focus not optimal.  
-4/10 — Mixed engagement; some expressions unclear or partially blocked subjects.  
-3/10 — Pumping and drinking scene with dispersed subjects, plaque partially cut off.  
-2/10 — Large group image with minimal interaction or emotional expression, plaque distant.  
-1/10 — Children sitting or praying near the well; no water activity, static or subdued composition.
+🚨 FORBIDDEN: Water well alone (no children) = MAX Priority 3 
+🥇 Priority {len(valid_images)} — Plaque readable + joyful children together in same frame, excellent lighting
+🥈 Priority {len(valid_images)-1} — Happy children playing with/splashing water, very lively and natural joy
+🥉 Priority {max(1, len(valid_images)-2)} — Children operating pump with clear water flow and happy expressions
+Priority 7 — Children filling containers from pump, visible water, full-body shots
+Priority 6 — Kids drinking and filling simultaneously, joyful but cluttered  
+Priority 5 — Drinking from hands or group joy, suboptimal lighting/focus
+Priority 4 — Mixed engagement, some unclear expressions or blocked subjects
+Priority 3 — MAXIMUM for well-only images or pumping with dispersed/unhappy children
+Priority 2 — Large group with minimal interaction, plaque distant
+Priority 1 — Static composition, no water activity, subdued or unclear
+
+⛔ ABSOLUTE RULE: Images showing ONLY the water well structure without any children visible CANNOT be ranked higher than Priority 3, regardless of plaque clarity.
 
 📌 TIP: Donor appeal is highest when:
 - Plaque is clearly visible with donor name.
