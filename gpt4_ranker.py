@@ -1,3 +1,4 @@
+
 import aiohttp
 import asyncio
 import os
@@ -50,21 +51,17 @@ async def rank_images(images, history_folder=None, water_well_name=None, max_sel
             folder_id = folder_match.group(1)
             history_context = await get_history_examples(folder_id)
 
-    # List all filenames and IDs clearly for strict reuse
-    image_list_str = "\n".join([f"- ID: {img['id']}, Filename: {img['name'] or img['filename']}" for img in images])
-
     prompt = f"""
 You are ranking {len(images)} water well images for donor appeal. Assign a unique priority score from 1 (worst) to {len(images)} (best), using each number once.
 
 🎯 GOAL: Identify the **top 2 donor images**:
-- 🥇 _1_: Must show a **clearly readable donor plaque** **and** at least one or more **happy, smiling, or visibly joyful children** around or near the plaque.  
-❌ Images showing only the plaque and no people are **not eligible** for _1_, even if the plaque is perfectly visible.
+- `_1_`: clearest plaque WITH children who are smiling, happy, or joyful — ideally around the plaque. Do NOT select a plaque-only image even if it's the clearest plaque. There must be joyful children around it for _1_.
 - `_2_`: joyful interaction with water (children splashing, smiling, visibly enjoying)
 
 🧠 RANKING RULES:
 ✅ Rank highest:
 - Children directly playing with water or holding containers
-- Plaque is readable and framed well
+- Plaque is readable and framed well WITH children smiling
 - Natural joy and expressive faces
 - Clean background, clear lighting
 
@@ -72,6 +69,7 @@ You are ranking {len(images)} water well images for donor appeal. Assign a uniqu
 - No water flow or joy
 - Faces are turned, bored, or unclear
 - Plaque cut off or out of frame
+- Plaque only without children should never be _1_
 - Crowded, blurry, redundant, or awkward composition
 
 🧪 Priority Definitions:
@@ -79,19 +77,11 @@ You are ranking {len(images)} water well images for donor appeal. Assign a uniqu
 {len(images)-1} → Best image for `_2_`
 1 → Worst image in batch (static, joyless, poor visibility)
 
-📸 Available Images:
-{image_list_str}
-
-🔒 STRICT RESPONSE RULES:
-- Use **each priority exactly once** from 1 to {len(images)}.
-- Use **exact 'filename' and 'id' from input** — do not make them up or change them.
-- Do not rename files, do not invent values.
-
-Return only a valid JSON array like this:
+Respond with JSON array only:
 [
   {{
-    "id": "image-id",  // must match input ID
-    "filename": "original-name.jpg",  // must match input filename exactly
+    "id": "image-id",
+    "filename": "original.jpg",
     "priority": 1–{len(images)},
     "reason": "Short visual justification"
   }},
@@ -134,18 +124,11 @@ Return only a valid JSON array like this:
 
         result = json.loads(match.group(0))
 
-        # Validate unique priorities and exact filenames
+        # Validate unique priorities
         priorities = [item.get("priority") for item in result]
         expected = list(range(1, len(images) + 1))
-        filenames_ok = all(item.get("filename") in [img['name'] or img['filename'] for img in images] for item in result)
-
-        if sorted(priorities) != expected or not filenames_ok:
-            return {
-                "error": "Priority or filename mismatch",
-                "priorities": priorities,
-                "filenamesValid": filenames_ok,
-                "raw": text
-            }
+        if sorted(priorities) != expected:
+            return {"error": "Priority numbers missing or duplicated", "priorities": priorities}
 
         return result
     except Exception as e:
