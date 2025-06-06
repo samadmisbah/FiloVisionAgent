@@ -33,6 +33,7 @@ async def get_history_examples(folder_id):
     if not GOOGLE_API_AVAILABLE:
         return ""
     try:
+        # Placeholder: insert real Google Drive logic if needed
         return "Past successful images show donor plaque clearly and joyful children interacting with water."
     except Exception as e:
         print(f"History example error: {e}")
@@ -49,6 +50,9 @@ async def rank_images(images, history_folder=None, water_well_name=None, max_sel
             folder_id = folder_match.group(1)
             history_context = await get_history_examples(folder_id)
 
+    # List all filenames and IDs clearly for strict reuse
+    image_list_str = "\n".join([f"- ID: {img['id']}, Filename: {img['name'] or img['filename']}" for img in images])
+
     prompt = f"""
 You are ranking {len(images)} water well images for donor appeal. Assign a unique priority score from 1 (worst) to {len(images)} (best), using each number once.
 
@@ -63,7 +67,7 @@ You are ranking {len(images)} water well images for donor appeal. Assign a uniqu
 - Natural joy and expressive faces
 - Clean background, clear lighting
 
-❌ Rank lower (3–{len(images)}):
+❌ Rank lower (3–10):
 - No water flow or joy
 - Faces are turned, bored, or unclear
 - Plaque cut off or out of frame
@@ -74,11 +78,19 @@ You are ranking {len(images)} water well images for donor appeal. Assign a uniqu
 {len(images)-1} → Best image for `_2_`
 1 → Worst image in batch (static, joyless, poor visibility)
 
-Return only a strict JSON array:
+📸 Available Images:
+{image_list_str}
+
+🔒 STRICT RESPONSE RULES:
+- Use **each priority exactly once** from 1 to {len(images)}.
+- Use **exact 'filename' and 'id' from input** — do not make them up or change them.
+- Do not rename files, do not invent values.
+
+Return only a valid JSON array like this:
 [
   {{
-    "id": "image-id",
-    "filename": "original.jpg",
+    "id": "image-id",  // must match input ID
+    "filename": "original-name.jpg",  // must match input filename exactly
     "priority": 1–{len(images)},
     "reason": "Short visual justification"
   }},
@@ -86,6 +98,7 @@ Return only a strict JSON array:
 ]
 """
 
+    # Build Vision API request
     message_content = [{"type": "text", "text": prompt}]
     for img in images:
         try:
@@ -120,11 +133,18 @@ Return only a strict JSON array:
 
         result = json.loads(match.group(0))
 
-        # Validate unique priorities
+        # Validate unique priorities and exact filenames
         priorities = [item.get("priority") for item in result]
         expected = list(range(1, len(images) + 1))
-        if sorted(priorities) != expected:
-            return {"error": "Priority numbers missing or duplicated", "priorities": priorities}
+        filenames_ok = all(item.get("filename") in [img['name'] or img['filename'] for img in images] for item in result)
+
+        if sorted(priorities) != expected or not filenames_ok:
+            return {
+                "error": "Priority or filename mismatch",
+                "priorities": priorities,
+                "filenamesValid": filenames_ok,
+                "raw": text
+            }
 
         return result
     except Exception as e:
