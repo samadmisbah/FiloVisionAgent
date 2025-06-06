@@ -32,3 +32,7 @@ async def rank_images_endpoint(payload: RankRequest):
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "service": "filo-vision-agent"}
+
+@app.get("/")
+async def root():
+    return {"message": "FiloVisionAgent is live and ready."}
