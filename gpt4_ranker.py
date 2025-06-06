@@ -57,7 +57,8 @@ async def rank_images(images, history_folder=None, water_well_name=None, max_sel
 You are ranking {len(images)} water well images for donor appeal. Assign a unique priority score from 1 (worst) to {len(images)} (best), using each number once.
 
 🎯 GOAL: Identify the **top 2 donor images**:
-- `_1_`: clearest plaque with children around it
+- 🥇 _1_: Must show a **clearly readable donor plaque** **and** at least one or more **happy, smiling, or visibly joyful children** around or near the plaque.  
+❌ Images showing only the plaque and no people are **not eligible** for _1_, even if the plaque is perfectly visible.
 - `_2_`: joyful interaction with water (children splashing, smiling, visibly enjoying)
 
 🧠 RANKING RULES:
