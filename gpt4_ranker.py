@@ -1,10 +1,10 @@
 import aiohttp
-import openai
 import asyncio
 import os
 import base64
 import re
 import json
+from openai import AsyncOpenAI
 
 # Add Google API imports
 try:
@@ -15,7 +15,8 @@ except ImportError:
     print("Google API client not available - history folder features disabled")
     GOOGLE_API_AVAILABLE = False
 
-openai.api_key = os.getenv("OPENAI_API_KEY")
+# Initialize OpenAI client with new syntax
+client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Global cache for history examples
 _history_cache = {}
@@ -185,11 +186,11 @@ Respond with ONLY a JSON array using the EXACT IDs and filenames from the valida
         except Exception as e:
             print(f"❌ Error processing image {i+1}: {e}")
 
-    # Call OpenAI Vision API
+    # Call OpenAI Vision API with new syntax
     try:
         print("🤖 Calling OpenAI Vision API...")
-        response = await openai.ChatCompletion.acreate(
-            model="gpt-4-vision-preview",
+        response = await client.chat.completions.create(
+            model="gpt-4o",  # GPT-4o is OpenAI's latest/best vision model (their "4.0")
             messages=[{"role": "user", "content": message_content}],
             max_tokens=2000,
             temperature=0.1
