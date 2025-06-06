@@ -15,11 +15,210 @@ except ImportError:
     print("Google API client not available - history folder features disabled")
     GOOGLE_API_AVAILABLE = False
 
-# Initialize OpenAI client with new syntax
+# Initialize OpenAI client
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# Global cache for history examples
+# ENHANCED: Global cache for history examples with one-time download
 _history_cache = {}
+_history_cache_lock = asyncio.Lock()
+
+def get_google_drive_service():
+    """Initialize Google Drive service using service account"""
+    try:
+        # You'll need to set up service account credentials
+        service_account_file = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE")
+        if not service_account_file:
+            print("❌ GOOGLE_SERVICE_ACCOUNT_FILE environment variable not set")
+            return None
+            
+        credentials = service_account.Credentials.from_service_account_file(
+            service_account_file,
+            scopes=['https://www.googleapis.com/auth/drive.readonly']
+        )
+        
+        service = build('drive', 'v3', credentials=credentials)
+        print("✅ Google Drive service initialized")
+        return service
+        
+    except Exception as e:
+        print(f"❌ Error initializing Google Drive service: {e}")
+        return None
+
+async def get_all_images_from_folder(service, folder_id, max_images=20):
+    """
+    Recursively get all images from folder and ALL its subfolders
+    """
+    all_images = []
+    folders_to_process = [folder_id]
+    
+    while folders_to_process and len(all_images) < max_images:
+        current_folder = folders_to_process.pop(0)
+        print(f"🔍 Scanning folder: {current_folder}")
+        
+        try:
+            # Get all items in current folder
+            results = service.files().list(
+                q=f"'{current_folder}' in parents and trashed=false",
+                fields="files(id, name, mimeType, webContentLink)",
+                pageSize=100
+            ).execute()
+            
+            items = results.get('files', [])
+            print(f"📁 Found {len(items)} items in folder {current_folder}")
+            
+            for item in items:
+                # If it's a folder, add to processing queue
+                if item['mimeType'] == 'application/vnd.google-apps.folder':
+                    folders_to_process.append(item['id'])
+                    print(f"📂 Added subfolder to queue: {item['name']}")
+                
+                # If it's an image, add to results
+                elif item['mimeType'].startswith('image/'):
+                    # Create download URL
+                    download_url = f"https://drive.google.com/uc?id={item['id']}&export=download"
+                    all_images.append({
+                        'id': item['id'],
+                        'name': item['name'],
+                        'url': download_url,
+                        'folder_id': current_folder
+                    })
+                    print(f"🖼️ Found image: {item['name']}")
+                    
+                    if len(all_images) >= max_images:
+                        break
+                        
+        except Exception as e:
+            print(f"❌ Error scanning folder {current_folder}: {e}")
+            continue
+    
+    print(f"✅ Total images found across all subfolders: {len(all_images)}")
+    return all_images
+
+async def download_and_analyze_history_images(history_images, max_analyze=5):
+    """
+    Download history images and analyze them for context
+    """
+    analyzed_examples = []
+    
+    # Limit to avoid token limits
+    images_to_analyze = history_images[:max_analyze]
+    
+    for img in images_to_analyze:
+        try:
+            print(f"📥 Downloading history image: {img['name']}")
+            img_data = await download_image(img['url'])
+            
+            if img_data:
+                base64_image = base64.b64encode(img_data).decode('utf-8')
+                
+                # Quick analysis of this history image
+                analysis_prompt = """Analyze this water well photo briefly. What makes it appealing for donors? 
+                Focus on: children's engagement, water visibility, plaque readability, overall composition.
+                Respond in 1-2 sentences."""
+                
+                try:
+                    response = await client.chat.completions.create(
+                        model="gpt-4o",
+                        messages=[{
+                            "role": "user", 
+                            "content": [
+                                {"type": "text", "text": analysis_prompt},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:image/jpeg;base64,{base64_image}",
+                                        "detail": "low"  # Low detail to save tokens
+                                    }
+                                }
+                            ]
+                        }],
+                        max_tokens=150,
+                        temperature=0.1
+                    )
+                    
+                    analysis = response.choices[0].message.content
+                    analyzed_examples.append({
+                        'filename': img['name'],
+                        'analysis': analysis
+                    })
+                    print(f"✅ Analyzed: {img['name']}")
+                    
+                except Exception as e:
+                    print(f"❌ Error analyzing {img['name']}: {e}")
+                    
+        except Exception as e:
+            print(f"❌ Error downloading {img['name']}: {e}")
+    
+    return analyzed_examples
+
+async def get_history_examples(folder_id, max_examples=5):
+    """
+    Get example images from history folder for context - WITH GLOBAL CACHING
+    """
+    if not GOOGLE_API_AVAILABLE:
+        print("Google API not available - skipping history examples")
+        return ""
+    
+    # ONE-TIME DOWNLOAD: Check global cache first
+    async with _history_cache_lock:
+        cache_key = f"history_{folder_id}"
+        
+        if cache_key in _history_cache:
+            print(f"✅ Using CACHED history examples for folder: {folder_id}")
+            return _history_cache[cache_key]
+        
+        print(f"🔄 FIRST TIME: Downloading history examples from folder: {folder_id}")
+        
+        try:
+            # Initialize Google Drive service
+            service = get_google_drive_service()
+            if not service:
+                return ""
+            
+            # Get ALL images from ALL subfolders
+            print(f"🔍 Scanning ALL subfolders in history folder: {folder_id}")
+            history_images = await asyncio.get_event_loop().run_in_executor(
+                None, 
+                lambda: asyncio.run(get_all_images_from_folder(service, folder_id, max_images=20))
+            )
+            
+            if not history_images:
+                print("❌ No history images found")
+                _history_cache[cache_key] = ""
+                return ""
+            
+            # Download and analyze selected images
+            analyzed_examples = await download_and_analyze_history_images(
+                history_images, 
+                max_analyze=max_examples
+            )
+            
+            if not analyzed_examples:
+                print("❌ No history images could be analyzed")
+                _history_cache[cache_key] = ""
+                return ""
+            
+            # Create context string
+            context_parts = ["📚 SUCCESSFUL EXAMPLES FROM PREVIOUS WELLS:"]
+            for i, example in enumerate(analyzed_examples, 1):
+                context_parts.append(f"{i}. {example['filename']}: {example['analysis']}")
+            
+            context_parts.append("\n🎯 Use these successful patterns to guide your ranking decisions.")
+            
+            history_context = "\n".join(context_parts)
+            
+            # CACHE THE RESULT for all subsequent calls
+            _history_cache[cache_key] = history_context
+            
+            print(f"✅ CACHED history context ({len(analyzed_examples)} examples)")
+            print(f"📊 Cache size: {len(history_context)} characters")
+            
+            return history_context
+            
+        except Exception as e:
+            print(f"❌ Error processing history folder: {e}")
+            _history_cache[cache_key] = ""  # Cache empty result to avoid retries
+            return ""
 
 async def download_image(url):
     try:
@@ -46,31 +245,6 @@ async def download_image(url):
         print(f"Download error: {e}")
         return None
 
-async def get_history_examples(folder_id, max_examples=5):
-    """
-    Get example images from history folder for context
-    """
-    if not GOOGLE_API_AVAILABLE:
-        print("Google API not available - skipping history examples")
-        return ""
-    
-    try:
-        # You'll need to implement Google Drive API access here
-        # This is a placeholder - replace with your actual Google Drive logic
-        print(f"🔍 Fetching history examples from folder: {folder_id}")
-        
-        # Placeholder implementation
-        # Replace this with actual Google Drive API calls to:
-        # 1. List files in the history folder
-        # 2. Download a few example images
-        # 3. Analyze them to provide context
-        
-        return "Previous successful photos showed children happily using the pump with clear water flow and readable donor plaques."
-        
-    except Exception as e:
-        print(f"Error fetching history examples: {e}")
-        return ""
-
 async def rank_images(images, history_folder=None, water_well_name=None, max_selections=10, **kwargs):
     """
     Rank images using OpenAI Vision API for donor appeal
@@ -79,7 +253,6 @@ async def rank_images(images, history_folder=None, water_well_name=None, max_sel
     print(f"📊 Processing {len(images)} images")
     print(f"📂 History folder: {history_folder}")
     
-    # Fix the NameError - use the images parameter
     valid_images = images
     
     if not valid_images:
@@ -92,7 +265,7 @@ async def rank_images(images, history_folder=None, water_well_name=None, max_sel
 Total images to rank: {len(valid_images)}
 """
     
-    # CREATE EXPLICIT FILENAME MAPPING - This is the key fix!
+    # CREATE EXPLICIT FILENAME MAPPING
     filename_mapping = []
     for i, img in enumerate(valid_images):
         filename = img.get('name', img.get('filename', f'image_{i}.jpg'))
@@ -102,7 +275,7 @@ Total images to rank: {len(valid_images)}
     
     mapping_text = "\n".join(filename_mapping)
     
-    # Process history folder if provided
+    # Process history folder if provided - WITH CACHING
     history_context = ""
     if history_folder and GOOGLE_API_AVAILABLE:
         try:
@@ -113,15 +286,10 @@ Total images to rank: {len(valid_images)}
                 folder_id = folder_id_match.group(1)
                 print(f"📁 Extracted folder ID: {folder_id}")
                 
-                # Get history examples
+                # Get history examples (cached after first call)
                 history_examples = await get_history_examples(folder_id)
                 if history_examples:
-                    history_context = f"""
-📚 CONTEXT FROM PREVIOUS SUCCESSFUL WELL PHOTOS:
-{history_examples}
-
-Use these successful examples as reference for what donors find most appealing.
-"""
+                    history_context = f"\n{history_examples}\n"
                     print(f"✅ Added history context")
                 else:
                     print("⚠️ No history examples found")
@@ -137,7 +305,7 @@ Use these successful examples as reference for what donors find most appealing.
             print("❌ Google API not available for history processing")
         history_context = ""
 
-    # ENHANCED PROMPT with explicit filename mapping and CRITICAL RULES
+    # ENHANCED PROMPT with history context
     enhanced_prompt = f"""You are ranking {len(valid_images)} images from a water well project for donor appeal.
 
 {input_validation}
@@ -194,7 +362,7 @@ Respond with ONLY a JSON array using the EXACT IDs and filenames from the mappin
 
 🔒 VALIDATION: Ensure every result uses an exact ID and filename from the mapping. Use each priority number 1-{len(valid_images)} once, with no duplicates or missing numbers."""
 
-    # Download and encode images
+    # Download and encode current images for ranking
     message_content = [{"type": "text", "text": enhanced_prompt}]
     
     print("🖼️ Processing images for Vision API...")
@@ -216,7 +384,7 @@ Respond with ONLY a JSON array using the EXACT IDs and filenames from the mappin
         except Exception as e:
             print(f"❌ Error processing image {i+1}: {e}")
 
-    # Call OpenAI Vision API with NEW SYNTAX
+    # Call OpenAI Vision API
     try:
         print("🤖 Calling OpenAI Vision API with GPT-4o...")
         
@@ -233,13 +401,11 @@ Respond with ONLY a JSON array using the EXACT IDs and filenames from the mappin
         print(f"❌ OpenAI API error: {e}")
         return {"error": f"OpenAI API error: {str(e)}"}
 
-    # Process and validate response
+    # Process and validate response (rest of the function remains the same)
     try:
-        # Extract JSON from the response
         response_text = response.choices[0].message.content
         print(f"📤 Raw OpenAI response: {response_text}")
         
-        # Try to extract JSON array from the response
         json_match = re.search(r'\[.*\]', response_text, re.DOTALL)
         if json_match:
             json_str = json_match.group(0)
