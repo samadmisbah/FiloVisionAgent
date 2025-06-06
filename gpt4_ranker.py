@@ -186,17 +186,18 @@ Respond with ONLY a JSON array using the EXACT IDs and filenames from the valida
         except Exception as e:
             print(f"❌ Error processing image {i+1}: {e}")
 
-    # Call OpenAI Vision API with new syntax
+    # Call OpenAI Vision API with NEW SYNTAX
     try:
-        print("🤖 Calling OpenAI Vision API...")
+        print("🤖 Calling OpenAI Vision API with GPT-4o...")
+        
         response = await client.chat.completions.create(
-            model="gpt-4o",  # GPT-4o is OpenAI's latest/best vision model (their "4.0")
+            model="gpt-4o",
             messages=[{"role": "user", "content": message_content}],
             max_tokens=2000,
             temperature=0.1
         )
         
-        print("✅ Received response from OpenAI")
+        print("✅ Received response from OpenAI GPT-4o")
         
     except Exception as e:
         print(f"❌ OpenAI API error: {e}")
