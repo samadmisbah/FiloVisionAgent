@@ -51,7 +51,10 @@ async def rank_images(images, history_folder=None, water_well_name=None, max_sel
             history_context = await get_history_examples(folder_id)
 
     prompt = f"""
-You are ranking {len(images)} water well images for donor appeal. Assign a unique priority score from 1 (worst) to {len(images)} (best), using each number once.
+You will ONLY return a strict JSON array output — no explanation, no preamble.
+
+You are ranking {len(images)} water well images for donor appeal.
+Assign a unique `priority` from 1 (worst) to {len(images)} (best), using each number once.
 
 🎯 GOAL: Identify the **top 2 donor images**:
 - `_1_`: clearest plaque WITH children who are smiling, happy, or joyful — ideally around the plaque. Do NOT select a plaque-only image even if it's the clearest plaque. There must be joyful children around it for _1_.
@@ -78,12 +81,13 @@ You are ranking {len(images)} water well images for donor appeal. Assign a uniqu
 
 📎 CRITICAL: Do NOT modify filenames. Always return the exact `filename` field from the input list, unaltered. Never invent names like "image.jpg".
 
-Respond with JSON array only:
+Respond with ONLY a valid JSON array. Do not explain anything else.
+
 [
   {{
     "id": "image-id",
-    "filename": "original.jpg",
-    "priority": 1–{len(images)},
+    "filename": "EXACT_FILENAME_FROM_INPUT.jpg",
+    "priority": 1,
     "reason": "Short visual justification"
   }},
   ...
