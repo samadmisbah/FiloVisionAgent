@@ -245,11 +245,142 @@ async def download_image(url):
         print(f"Download error: {e}")
         return None
 
+# NEW: Content validation function for rule enforcement
+async def validate_image_content(image_data, filename):
+    """
+    Quick content validation for rule enforcement
+    """
+    try:
+        base64_image = base64.b64encode(image_data).decode('utf-8')
+        
+        validation_prompt = """Look at this water well image and answer YES or NO:
+
+1. CHILDREN_VISIBLE: Are children clearly visible?
+2. PLAQUE_READABLE: Is a donation plaque/sign readable?
+3. WATER_ACTIVE: Is water flowing or being actively used?
+4. CHILDREN_HAPPY: Do children appear happy/smiling?
+5. WELL_ONLY: Is this ONLY the well structure with NO children?
+
+Format: CHILDREN_VISIBLE: YES/NO, PLAQUE_READABLE: YES/NO, WATER_ACTIVE: YES/NO, CHILDREN_HAPPY: YES/NO, WELL_ONLY: YES/NO"""
+
+        response = await client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{
+                "role": "user", 
+                "content": [
+                    {"type": "text", "text": validation_prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{base64_image}",
+                            "detail": "low"
+                        }
+                    }
+                ]
+            }],
+            max_tokens=50,
+            temperature=0.0
+        )
+        
+        response_text = response.choices[0].message.content
+        print(f"🔍 Content validation for {filename}: {response_text}")
+        
+        return {
+            'has_children': 'CHILDREN_VISIBLE: YES' in response_text,
+            'has_plaque': 'PLAQUE_READABLE: YES' in response_text,
+            'has_water': 'WATER_ACTIVE: YES' in response_text,
+            'children_happy': 'CHILDREN_HAPPY: YES' in response_text,
+            'well_only': 'WELL_ONLY: YES' in response_text
+        }
+        
+    except Exception as e:
+        print(f"❌ Content validation error for {filename}: {e}")
+        return {'has_children': False, 'has_plaque': False, 'has_water': False, 'children_happy': False, 'well_only': False}
+
+# NEW: Rule enforcement function
+async def enforce_ranking_rules(result, image_validations, total_images):
+    """
+    Enforce strict ranking rules on the AI result
+    """
+    print("🚨 ENFORCING STRICT RANKING RULES...")
+    
+    # Find violations and ideal candidates
+    violations = []
+    ideal_top = []
+    ideal_second = []
+    well_only = []
+    
+    for item in result:
+        img_id = item['id']
+        priority = item['priority']
+        validation = image_validations.get(img_id, {})
+        
+        # Check for well-only violation in top positions
+        if validation.get('well_only', False) and priority > 3:
+            violations.append(f"❌ {item['filename']}: Well-only image ranked {priority} (max allowed: 3)")
+            well_only.append(item)
+        
+        # Find ideal candidates
+        elif validation.get('has_plaque', False) and validation.get('children_happy', False):
+            ideal_top.append(item)
+        elif validation.get('children_happy', False) and validation.get('has_water', False):
+            ideal_second.append(item)
+    
+    # If violations found, fix them
+    if violations:
+        print("⚠️ RULE VIOLATIONS DETECTED:")
+        for violation in violations:
+            print(f"   {violation}")
+        
+        # Get current top 2
+        result_sorted = sorted(result, key=lambda x: x['priority'], reverse=True)
+        top_item = result_sorted[0] if len(result_sorted) > 0 else None
+        second_item = result_sorted[1] if len(result_sorted) > 1 else None
+        
+        # Fix top position if needed
+        if top_item and image_validations.get(top_item['id'], {}).get('well_only', False):
+            # Find best replacement
+            if ideal_top:
+                replacement = ideal_top[0]
+                print(f"🔄 FIXING: Moving {replacement['filename']} to top position")
+                # Swap priorities
+                old_priority = replacement['priority']
+                replacement['priority'] = top_item['priority']
+                top_item['priority'] = min(old_priority, 3)
+                replacement['reason'] = "🥇 ENFORCED: Top donor image with plaque + children"
+                top_item['reason'] = f"🚫 ENFORCED: Well-only limited to priority {top_item['priority']}"
+            elif ideal_second:
+                replacement = ideal_second[0]
+                print(f"🔄 FIXING: Moving {replacement['filename']} to top position")
+                old_priority = replacement['priority']
+                replacement['priority'] = top_item['priority']
+                top_item['priority'] = min(old_priority, 3)
+                replacement['reason'] = "🥇 ENFORCED: Top donor image with happy children + water"
+                top_item['reason'] = f"🚫 ENFORCED: Well-only limited to priority {top_item['priority']}"
+        
+        # Fix second position if needed
+        if second_item and image_validations.get(second_item['id'], {}).get('well_only', False):
+            remaining_candidates = [img for img in (ideal_top + ideal_second) if img['priority'] != total_images]
+            if remaining_candidates:
+                replacement = remaining_candidates[0]
+                print(f"🔄 FIXING: Moving {replacement['filename']} to second position")
+                old_priority = replacement['priority']
+                replacement['priority'] = second_item['priority']
+                second_item['priority'] = min(old_priority, 3)
+                replacement['reason'] = "🥈 ENFORCED: Second donor image with children interaction"
+                second_item['reason'] = f"🚫 ENFORCED: Well-only limited to priority {second_item['priority']}"
+        
+        print("✅ RULE ENFORCEMENT COMPLETED")
+    else:
+        print("✅ No rule violations detected")
+    
+    return result
+
 async def rank_images(images, history_folder=None, water_well_name=None, max_selections=10, **kwargs):
     """
-    Rank images using OpenAI Vision API for donor appeal
+    Rank images using OpenAI Vision API for donor appeal with STRICT rule enforcement
     """
-    print(f"🎯 Starting image ranking for {water_well_name}")
+    print(f"🎯 Starting STRICT image ranking for {water_well_name}")
     print(f"📊 Processing {len(images)} images")
     print(f"📂 History folder: {history_folder}")
     
@@ -305,42 +436,53 @@ Total images to rank: {len(valid_images)}
             print("❌ Google API not available for history processing")
         history_context = ""
 
-    # ENHANCED PROMPT with history context
-    enhanced_prompt = f"""You are ranking {len(valid_images)} images from a water well project for donor appeal.
+    # ENHANCED PROMPT with stricter enforcement language
+    enhanced_prompt = f"""🚨 CRITICAL WATER WELL DONOR RANKING - STRICT RULES MUST BE FOLLOWED 🚨
+
+You are ranking {len(valid_images)} images from a water well project for MAXIMUM donor appeal. This is for charity fundraising.
 
 {input_validation}
 
 {history_context}
 
-🚨 CRITICAL RULE: NEVER rank a water well by itself (no children visible) as Priority {len(valid_images)}. Images with ONLY the water well structure and NO children must be ranked 3 or lower.
+🚨 ABSOLUTE REQUIREMENTS - NEVER VIOLATE THESE:
 
-🎯 GOAL: Identify the **top 2 donor images**:
-- Priority {len(valid_images)} (becomes _1_): MUST have both readable plaque AND joyful children visible in the same frame. If no image has both plaque + children, choose the image with happiest children interacting with water.
-- Priority {len(valid_images)-1} (becomes _2_): joyful interaction with water (children splashing, smiling, visibly enjoying)
+1. 🥇 Priority {len(valid_images)} (becomes _1_): 
+   - MUST show readable donation plaque AND happy children together
+   - If no image has both, choose HAPPIEST children actively using water
+   - NEVER assign this to well-only images
+
+2. 🥈 Priority {len(valid_images)-1} (becomes _2_):  
+   - Happy children splashing/drinking/playing with water
+   - Children must show visible joy and engagement
+   - Active water interaction required
+
+3. 🚫 FORBIDDEN: Images with ONLY water well structure (no children) = MAXIMUM Priority 3
 
 You must assign a **priority score** to each image from 1 (lowest donor appeal) to {len(valid_images)} (highest donor appeal), using each number exactly once.
 
 📊 DETAILED RANKING GUIDE (Donor Visual Preference):
 
 🚨 FORBIDDEN: Water well alone (no children) = MAX Priority 3 
-🥇 Priority {len(valid_images)} — Plaque readable + joyful children together in same frame, excellent lighting
-🥈 Priority {len(valid_images)-1} — Happy children playing with/splashing water, very lively and natural joy
-🥉 Priority {max(1, len(valid_images)-2)} — Children operating pump with clear water flow and happy expressions
-Priority 7 — Children filling containers from pump, visible water, full-body shots
-Priority 6 — Kids drinking and filling simultaneously, joyful but cluttered  
-Priority 5 — Drinking from hands or group joy, suboptimal lighting/focus
+🥇 Priority {len(valid_images)} — Plaque readable + joyful children together in same frame, excellent lighting, perfect donor appeal
+🥈 Priority {len(valid_images)-1} — Happy children playing with/splashing water, very lively and natural joy, clear engagement
+🥉 Priority {max(1, len(valid_images)-2)} — Children operating pump with clear water flow and happy expressions, good composition
+Priority 7 — Children filling containers from pump, visible water, full-body shots, positive energy
+Priority 6 — Kids drinking and filling simultaneously, joyful but may be cluttered  
+Priority 5 — Drinking from hands or group joy, suboptimal lighting/focus but positive
 Priority 4 — Mixed engagement, some unclear expressions or blocked subjects
-Priority 3 — MAXIMUM for well-only images or pumping with dispersed/unhappy children
-Priority 2 — Large group with minimal interaction, plaque distant
-Priority 1 — Static composition, no water activity, subdued or unclear
+Priority 3 — MAXIMUM for well-only images OR pumping with dispersed/unhappy children
+Priority 2 — Large group with minimal interaction, plaque distant, static feeling
+Priority 1 — Very static composition, no water activity, subdued or unclear expressions
 
-⛔ ABSOLUTE RULE: Images showing ONLY the water well structure without any children visible CANNOT be ranked higher than Priority 3, regardless of plaque clarity.
+⛔ ABSOLUTE RULE: Images showing ONLY the water well structure without any children visible CANNOT be ranked higher than Priority 3, regardless of plaque clarity or well beauty.
 
-📌 TIP: Donor appeal is highest when:
-- Plaque is clearly visible with donor name.
-- Children look happy and actively use the well.
-- Water flow is visible.
-- The scene feels authentic, clean, and emotionally uplifting.
+📌 DONOR APPEAL MAXIMIZERS:
+- Readable donor plaque with clear name visibility
+- Children showing genuine happiness and joy
+- Active water usage (flowing, splashing, drinking)
+- Clean, bright, emotionally uplifting scenes
+- Natural, candid moments vs posed shots
 
 📎 CRITICAL FILENAME MAPPING - USE THESE EXACT VALUES:
 {mapping_text}
@@ -355,21 +497,25 @@ Respond with ONLY a JSON array using the EXACT IDs and filenames from the mappin
     "id": "exact-id-from-mapping-above",
     "filename": "exact-filename-from-mapping-above",
     "priority": 1,
-    "reason": "Short visual justification"
+    "reason": "Specific visual justification following the criteria above"
   }},
   ...
 ]
 
 🔒 VALIDATION: Ensure every result uses an exact ID and filename from the mapping. Use each priority number 1-{len(valid_images)} once, with no duplicates or missing numbers."""
 
-    # Download and encode current images for ranking
+    # Download and encode current images for ranking - ENHANCED WITH DATA STORAGE
     message_content = [{"type": "text", "text": enhanced_prompt}]
+    image_data_map = {}  # NEW: Store image data for validation
     
     print("🖼️ Processing images for Vision API...")
     for i, img in enumerate(valid_images):
         try:
             img_data = await download_image(img['url'])
             if img_data:
+                # NEW: Store for later validation
+                image_data_map[img['id']] = img_data
+                
                 base64_image = base64.b64encode(img_data).decode('utf-8')
                 message_content.append({
                     "type": "image_url",
@@ -401,7 +547,7 @@ Respond with ONLY a JSON array using the EXACT IDs and filenames from the mappin
         print(f"❌ OpenAI API error: {e}")
         return {"error": f"OpenAI API error: {str(e)}"}
 
-    # Process and validate response (rest of the function remains the same)
+    # Process and validate response with ENHANCED RULE ENFORCEMENT
     try:
         response_text = response.choices[0].message.content
         print(f"📤 Raw OpenAI response: {response_text}")
@@ -451,7 +597,28 @@ Respond with ONLY a JSON array using the EXACT IDs and filenames from the mappin
                     return {"error": f"Invalid ID returned: '{returned_id}'. Must use one of: {input_ids}"}
             
             print("✅ Filename and ID validation passed")
-            print(f"🎯 Returning {len(result)} ranked images to n8n")
+
+            # NEW: Content validation and rule enforcement
+            print("🔍 VALIDATING IMAGE CONTENT...")
+            image_validations = {}
+            
+            for img in valid_images:
+                if img['id'] in image_data_map:
+                    validation = await validate_image_content(
+                        image_data_map[img['id']], 
+                        img.get('name', img.get('filename', 'Unknown'))
+                    )
+                    image_validations[img['id']] = validation
+            
+            # ENFORCE RANKING RULES
+            result = await enforce_ranking_rules(result, image_validations, len(valid_images))
+            
+            # Log final ranking for verification
+            print("📊 FINAL ENFORCED RANKING:")
+            for item in sorted(result, key=lambda x: x['priority'], reverse=True):
+                print(f"   Priority {item['priority']}: {item['filename']} - {item['reason']}")
+            
+            print(f"🎯 Returning {len(result)} STRICTLY RANKED images to n8n")
             return result
             
         else:
