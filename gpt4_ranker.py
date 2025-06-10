@@ -404,6 +404,17 @@ async def rank_images(images, history_folder=None, water_well_name=None, max_sel
     """
     Rank images using OpenAI Vision API for donor appeal with BULLETPROOF validation
     """
+    # Handle nested array structure from n8n
+    if isinstance(images, list) and len(images) > 0 and isinstance(images[0], dict):
+        if 'images' in images[0]:
+            # Extract from nested structure: [{"images": [...], "history_folder": "..."}]
+            data = images[0]
+            images = data.get('images', [])
+            history_folder = history_folder or data.get('history_folder')
+            water_well_name = water_well_name or data.get('water_well_name')
+            max_selections = max_selections or data.get('max_selections', 10)
+            print("✅ Extracted parameters from nested structure")
+    
     print(f"🎯 Starting BULLETPROOF image ranking for {water_well_name}")
     print(f"📊 Processing {len(images)} images")
     print(f"📂 History folder: {history_folder}")
@@ -460,16 +471,12 @@ Total images to rank: {len(valid_images)}
             print("❌ Google API not available for history processing")
         history_context = ""
 
-    # STEP 1: ENHANCED PROMPT with mega-emphasis on unique priorities
+    # STEP 1: ENHANCED PROMPT with balanced emphasis
     enhanced_prompt = f"""🚨 CRITICAL WATER WELL DONOR RANKING - STRICT RULES MUST BE FOLLOWED 🚨
 
 You are ranking {len(valid_images)} images from a water well project for MAXIMUM donor appeal. This is for charity fundraising.
 
-🔒🔒🔒 CRITICAL NUMBERING RULE 🔒🔒🔒
-YOU MUST USE EACH PRIORITY NUMBER EXACTLY ONCE:
-Priority 1, Priority 2, Priority 3, ..., Priority {len(valid_images)}
-NO DUPLICATES! NO MISSING NUMBERS! EACH IMAGE GETS A UNIQUE PRIORITY!
-🔒🔒🔒 CRITICAL NUMBERING RULE 🔒🔒🔒
+IMPORTANT: Assign each image a unique priority number from 1 to {len(valid_images)}. Use each number exactly once (no duplicates). Ignore any numbers in filenames - rank based on visual content only.
 
 {input_validation}
 
@@ -518,9 +525,7 @@ Priority 1 — Very static composition, no water activity, subdued or unclear ex
 ❌ NEVER use generic names like "image1.jpg", "image2.jpg" 
 ✅ ONLY use the exact id and filename from the mapping above
 
-🔒🔒🔒 REMEMBER: USE EACH PRIORITY NUMBER 1-{len(valid_images)} EXACTLY ONCE! 🔒🔒🔒
-
-Respond with ONLY a JSON array using the EXACT IDs and filenames from the mapping above:
+Respond with ONLY a JSON array using the EXACT IDs and filenames from the mapping above. Assign priorities 1-{len(valid_images)} based on donor appeal, not filename numbers:
 
 [
   {{
