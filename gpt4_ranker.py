@@ -113,7 +113,7 @@ async def download_and_analyze_history_images(history_images, max_analyze=5):
                 
                 # Quick analysis of this history image
                 analysis_prompt = """Analyze this water well photo briefly. What makes it appealing for donors? 
-                Focus on: children's engagement, water visibility, plaque readability, overall composition.
+                Focus on: children's engagement with clean water, water visibility and flow, plaque readability, overall composition.
                 Respond in 1-2 sentences."""
                 
                 try:
@@ -257,7 +257,7 @@ async def validate_image_content(image_data, filename):
 
 1. CHILDREN_VISIBLE: Are children clearly visible?
 2. PLAQUE_READABLE: Is a donation plaque/sign readable?
-3. WATER_ACTIVE: Is water flowing or being actively used?
+3. WATER_ACTIVE: Is clean water flowing or being actively used?
 4. CHILDREN_HAPPY: Do children appear happy/smiling?
 5. WELL_ONLY: Is this ONLY the well structure with NO children?
 
@@ -425,7 +425,7 @@ async def handle_content_policy_violation(valid_images, enhanced_prompt, water_w
             base64_image = base64.b64encode(img_data).decode('utf-8')
             
             # Simple test prompt
-            test_prompt = f"Analyze this water well image briefly for donor appeal. Rate 1-10 and explain why."
+            test_prompt = f"Analyze this clean water well image briefly for donor appeal. Rate 1-10 and explain why children are interacting with the clean water source."
             
             test_response = await client.chat.completions.create(
                 model="gpt-4o",
@@ -700,9 +700,9 @@ IMPORTANT: Assign each image a unique priority number from 1 to {len(valid_image
    - NEVER assign this to well-only images
 
 2. 🥈 Priority {len(valid_images)-1} (becomes _2_):  
-   - Happy children splashing/drinking/playing with water
-   - Children must show visible joy and engagement
-   - Active water interaction required
+   - Happy children splashing/drinking clean water/playing with water
+   - Children must show visible joy and engagement with clean water
+   - Active clean water interaction required
 
 3. 🚫 FORBIDDEN: Images with ONLY water well structure (no children) = MAXIMUM Priority 3
 
@@ -710,23 +710,23 @@ IMPORTANT: Assign each image a unique priority number from 1 to {len(valid_image
 
 🚨 FORBIDDEN: Water well alone (no children) = MAX Priority 3 
 🥇 Priority {len(valid_images)} — Plaque readable + joyful children together in same frame, excellent lighting, perfect donor appeal
-🥈 Priority {len(valid_images)-1} — Happy children playing with/splashing water, very lively and natural joy, clear engagement
-🥉 Priority {max(1, len(valid_images)-2)} — Children operating pump with clear water flow and happy expressions, good composition
-Priority 7+ — Children filling containers from pump, visible water, full-body shots, positive energy
-Priority 6 — Kids drinking and filling simultaneously, joyful but may be cluttered  
-Priority 5 — Drinking from hands or group joy, suboptimal lighting/focus but positive
-Priority 4 — Mixed engagement, some unclear expressions or blocked subjects
+🥈 Priority {len(valid_images)-1} — Happy children playing with/splashing clean water, very lively and natural joy, clear engagement with water source
+🥉 Priority {max(1, len(valid_images)-2)} — Children operating pump with clear clean water flow and happy expressions, good composition
+Priority 7+ — Children filling containers from pump with clean water, visible water flow, full-body shots, positive energy
+Priority 6 — Kids drinking clean water and filling containers simultaneously, joyful but may be cluttered  
+Priority 5 — Drinking clean water from hands or group joy around water source, suboptimal lighting/focus but positive
+Priority 4 — Mixed engagement, some unclear expressions or blocked subjects, minimal water interaction
 Priority 3 — MAXIMUM for well-only images OR pumping with dispersed/unhappy children
-Priority 2 — Large group with minimal interaction, plaque distant, static feeling
-Priority 1 — Very static composition, no water activity, subdued or unclear expressions
+Priority 2 — Large group with minimal clean water interaction, plaque distant, static feeling
+Priority 1 — Very static composition, no clean water activity, subdued or unclear expressions
 
 ⛔ ABSOLUTE RULE: Images showing ONLY the water well structure without any children visible CANNOT be ranked higher than Priority 3, regardless of plaque clarity or well beauty.
 
 📌 DONOR APPEAL MAXIMIZERS:
 - Readable donor plaque with clear name visibility
-- Children showing genuine happiness and joy
-- Active water usage (flowing, splashing, drinking)
-- Clean, bright, emotionally uplifting scenes
+- Children showing genuine happiness and joy around clean water
+- Active clean water usage (flowing, splashing, drinking clean water from well)
+- Clean, bright, emotionally uplifting scenes showing water access success
 - Natural, candid moments vs posed shots
 
 📎 CRITICAL FILENAME MAPPING - USE THESE EXACT VALUES:
