@@ -400,9 +400,219 @@ async def enforce_ranking_rules(result, image_validations, total_images):
     
     return result
 
+async def handle_content_policy_violation(valid_images, enhanced_prompt, water_well_name):
+    """
+    Handle content policy violations by processing images individually
+    """
+    print("🔧 HANDLING CONTENT POLICY VIOLATION...")
+    print("🔍 Testing images individually to identify problematic ones...")
+    
+    safe_images = []
+    problematic_images = []
+    
+    # Test each image individually
+    for i, img in enumerate(valid_images):
+        try:
+            print(f"🧪 Testing image {i+1}: {img.get('name', 'Unknown')}")
+            
+            # Download and encode just this image
+            img_data = await download_image(img['url'])
+            if not img_data:
+                print(f"❌ Could not download image {i+1}")
+                problematic_images.append(img)
+                continue
+                
+            base64_image = base64.b64encode(img_data).decode('utf-8')
+            
+            # Simple test prompt
+            test_prompt = f"Analyze this water well image briefly for donor appeal. Rate 1-10 and explain why."
+            
+            test_response = await client.chat.completions.create(
+                model="gpt-4o",
+                messages=[{
+                    "role": "user", 
+                    "content": [
+                        {"type": "text", "text": test_prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_image}",
+                                "detail": "low"
+                            }
+                        }
+                    ]
+                }],
+                max_tokens=100,
+                temperature=0.1
+            )
+            
+            test_result = test_response.choices[0].message.content
+            
+            if "I'm sorry, I can't assist" in test_result or "I cannot" in test_result:
+                print(f"🚨 PROBLEMATIC IMAGE IDENTIFIED: {img.get('name', 'Unknown')}")
+                problematic_images.append(img)
+            else:
+                print(f"✅ Safe image: {img.get('name', 'Unknown')}")
+                safe_images.append(img)
+                
+        except Exception as e:
+            print(f"❌ Error testing image {i+1}: {e}")
+            problematic_images.append(img)
+            
+        # Add small delay to avoid rate limits
+        await asyncio.sleep(0.5)
+    
+    print(f"📊 CONTENT POLICY ANALYSIS COMPLETE:")
+    print(f"   ✅ Safe images: {len(safe_images)}")
+    print(f"   🚨 Problematic images: {len(problematic_images)}")
+    
+    if len(safe_images) == 0:
+        return {
+            "error": "All images failed content policy check",
+            "details": f"All {len(valid_images)} images were flagged by OpenAI content policy",
+            "problematic_files": [img.get('name', 'Unknown') for img in problematic_images]
+        }
+    
+    if len(problematic_images) > 0:
+        print(f"🔄 PROCEEDING WITH {len(safe_images)} SAFE IMAGES...")
+        print("🚨 Problematic images excluded:")
+        for img in problematic_images:
+            print(f"   - {img.get('name', 'Unknown')}")
+    
+    # Proceed with safe images only
+    return await rank_safe_images(safe_images, enhanced_prompt, water_well_name, problematic_images)
+
+async def rank_safe_images(safe_images, enhanced_prompt, water_well_name, excluded_images):
+    """
+    Rank only the safe images after content policy filtering
+    """
+    print(f"🎯 RANKING {len(safe_images)} SAFE IMAGES...")
+    
+    # Update prompt for reduced image count
+    total_safe = len(safe_images)
+    updated_prompt = enhanced_prompt.replace(
+        f"You are ranking {len(safe_images) + len(excluded_images)} images",
+        f"You are ranking {total_safe} images (some excluded by content policy)"
+    )
+    
+    # Update priority ranges in prompt using regex
+    updated_prompt = re.sub(
+        r'Priority \d+',
+        f'Priority {total_safe}',
+        updated_prompt
+    )
+    updated_prompt = re.sub(
+        r'priorities 1-\d+',
+        f'priorities 1-{total_safe}',
+        updated_prompt
+    )
+    updated_prompt = re.sub(
+        r'Priority {len\(valid_images\)}',
+        f'Priority {total_safe}',
+        updated_prompt
+    )
+    
+    # Create mapping for safe images only
+    safe_mapping = []
+    for i, img in enumerate(safe_images):
+        filename = img.get('name', img.get('filename', f'image_{i}.jpg'))
+        img_id = img.get('id', f'unknown_id_{i}')
+        safe_mapping.append(f"Image {i+1}: id='{img_id}', filename='{filename}'")
+    
+    # Replace the mapping section
+    mapping_section = "\n".join(safe_mapping)
+    updated_prompt = re.sub(
+        r'📎 CRITICAL FILENAME MAPPING.*?(?=\n\n|$)',
+        f"📎 CRITICAL FILENAME MAPPING - USE THESE EXACT VALUES:\n{mapping_section}",
+        updated_prompt,
+        flags=re.DOTALL
+    )
+    
+    # Download and encode safe images
+    message_content = [{"type": "text", "text": updated_prompt}]
+    image_data_map = {}
+    
+    for i, img in enumerate(safe_images):
+        try:
+            img_data = await download_image(img['url'])
+            if img_data:
+                image_data_map[img['id']] = img_data
+                base64_image = base64.b64encode(img_data).decode('utf-8')
+                message_content.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{base64_image}",
+                        "detail": "high"
+                    }
+                })
+                print(f"✅ Added safe image {i+1}: {img.get('name', 'Unknown')}")
+        except Exception as e:
+            print(f"❌ Error processing safe image {i+1}: {e}")
+    
+    # Call OpenAI with safe images
+    try:
+        response = await client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": message_content}],
+            max_tokens=2000,
+            temperature=0.1
+        )
+        
+        response_text = response.choices[0].message.content
+        print(f"✅ Successfully ranked {len(safe_images)} safe images")
+        
+        # Process the response normally
+        json_match = re.search(r'\[.*\]', response_text, re.DOTALL)
+        if json_match:
+            json_str = json_match.group(0)
+            result = json.loads(json_str)
+            
+            # Validate and fix priorities for safe images
+            priorities = [item.get('priority') for item in result]
+            expected_priorities = list(range(1, len(safe_images) + 1))
+            
+            if sorted(priorities) != expected_priorities:
+                print(f"🚨 DUPLICATE PRIORITIES IN SAFE IMAGES - FIXING...")
+                result = fix_duplicate_priorities(result, len(safe_images))
+            
+            # Content validation and rule enforcement for safe images
+            print("🔍 VALIDATING SAFE IMAGE CONTENT...")
+            image_validations = {}
+            
+            for img in safe_images:
+                if img['id'] in image_data_map:
+                    validation = await validate_image_content(
+                        image_data_map[img['id']], 
+                        img.get('name', img.get('filename', 'Unknown'))
+                    )
+                    image_validations[img['id']] = validation
+            
+            # ENFORCE RANKING RULES on safe images
+            result = await enforce_ranking_rules(result, image_validations, len(safe_images))
+            
+            # Add excluded images info to result
+            if excluded_images:
+                for item in result:
+                    item['content_policy_note'] = f"{len(excluded_images)} images excluded by content policy"
+                
+                # Add summary of excluded files
+                result.append({
+                    "excluded_images": [img.get('name', 'Unknown') for img in excluded_images],
+                    "exclusion_reason": "OpenAI content policy violation",
+                    "total_processed": len(safe_images),
+                    "total_excluded": len(excluded_images)
+                })
+            
+            return result
+        else:
+            return {"error": "Could not parse JSON from safe images response", "raw_response": response_text}
+            
+    except Exception as e:
+        return {"error": f"Error ranking safe images: {str(e)}"}
+
 async def rank_images(images, history_folder=None, water_well_name=None, max_selections=10, **kwargs):
     """
-    Rank images using OpenAI Vision API for donor appeal with BULLETPROOF validation
+    Rank images using OpenAI Vision API for donor appeal with BULLETPROOF validation and content policy handling
     """
     # Handle nested array structure from n8n
     if isinstance(images, list) and len(images) > 0 and isinstance(images[0], dict):
@@ -565,7 +775,7 @@ Respond with ONLY a JSON array using the EXACT IDs and filenames from the mappin
         except Exception as e:
             print(f"❌ Error processing image {i+1}: {e}")
 
-    # Call OpenAI Vision API with retry logic
+    # Call OpenAI Vision API with retry logic and content policy handling
     max_retries = 2
     for attempt in range(max_retries + 1):
         try:
@@ -577,6 +787,15 @@ Respond with ONLY a JSON array using the EXACT IDs and filenames from the mappin
                 max_tokens=2000,
                 temperature=0.1
             )
+            
+            # Check for content policy violation
+            response_text = response.choices[0].message.content
+            if "I'm sorry, I can't assist with that" in response_text or "I cannot" in response_text:
+                print("🚨 CONTENT POLICY VIOLATION DETECTED")
+                print(f"   Response: {response_text}")
+                
+                # Try processing images individually to identify problematic ones
+                return await handle_content_policy_violation(valid_images, enhanced_prompt, water_well_name)
             
             print("✅ Received response from OpenAI GPT-4o")
             break
