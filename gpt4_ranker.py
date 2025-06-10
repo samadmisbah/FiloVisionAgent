@@ -297,6 +297,30 @@ Format: CHILDREN_VISIBLE: YES/NO, PLAQUE_READABLE: YES/NO, WATER_ACTIVE: YES/NO,
         print(f"❌ Content validation error for {filename}: {e}")
         return {'has_children': False, 'has_plaque': False, 'has_water': False, 'children_happy': False, 'well_only': False}
 
+# NEW: Step 3 - Automatic priority fixing function
+def fix_duplicate_priorities(result, total_images):
+    """
+    STEP 3: Automatically fix duplicate priorities by reassigning them sequentially
+    """
+    print("🔧 FIXING DUPLICATE PRIORITIES...")
+    
+    # Sort by current priority (highest first), then by filename for consistency
+    sorted_result = sorted(result, key=lambda x: (-x['priority'], x['filename']))
+    
+    # Reassign priorities 1 to N sequentially
+    for i, item in enumerate(sorted_result):
+        new_priority = total_images - i  # Highest priority = total_images
+        old_priority = item['priority']
+        item['priority'] = new_priority
+        
+        if old_priority != new_priority:
+            print(f"   🔄 {item['filename']}: {old_priority} → {new_priority}")
+            # Update reason to reflect the fix
+            item['reason'] = f"FIXED: {item['reason']}"
+    
+    print("✅ Priority fixing completed")
+    return sorted_result
+
 # NEW: Rule enforcement function
 async def enforce_ranking_rules(result, image_validations, total_images):
     """
@@ -378,9 +402,9 @@ async def enforce_ranking_rules(result, image_validations, total_images):
 
 async def rank_images(images, history_folder=None, water_well_name=None, max_selections=10, **kwargs):
     """
-    Rank images using OpenAI Vision API for donor appeal with STRICT rule enforcement
+    Rank images using OpenAI Vision API for donor appeal with BULLETPROOF validation
     """
-    print(f"🎯 Starting STRICT image ranking for {water_well_name}")
+    print(f"🎯 Starting BULLETPROOF image ranking for {water_well_name}")
     print(f"📊 Processing {len(images)} images")
     print(f"📂 History folder: {history_folder}")
     
@@ -436,10 +460,16 @@ Total images to rank: {len(valid_images)}
             print("❌ Google API not available for history processing")
         history_context = ""
 
-    # ENHANCED PROMPT with stricter enforcement language
+    # STEP 1: ENHANCED PROMPT with mega-emphasis on unique priorities
     enhanced_prompt = f"""🚨 CRITICAL WATER WELL DONOR RANKING - STRICT RULES MUST BE FOLLOWED 🚨
 
 You are ranking {len(valid_images)} images from a water well project for MAXIMUM donor appeal. This is for charity fundraising.
+
+🔒🔒🔒 CRITICAL NUMBERING RULE 🔒🔒🔒
+YOU MUST USE EACH PRIORITY NUMBER EXACTLY ONCE:
+Priority 1, Priority 2, Priority 3, ..., Priority {len(valid_images)}
+NO DUPLICATES! NO MISSING NUMBERS! EACH IMAGE GETS A UNIQUE PRIORITY!
+🔒🔒🔒 CRITICAL NUMBERING RULE 🔒🔒🔒
 
 {input_validation}
 
@@ -459,15 +489,13 @@ You are ranking {len(valid_images)} images from a water well project for MAXIMUM
 
 3. 🚫 FORBIDDEN: Images with ONLY water well structure (no children) = MAXIMUM Priority 3
 
-You must assign a **priority score** to each image from 1 (lowest donor appeal) to {len(valid_images)} (highest donor appeal), using each number exactly once.
-
 📊 DETAILED RANKING GUIDE (Donor Visual Preference):
 
 🚨 FORBIDDEN: Water well alone (no children) = MAX Priority 3 
 🥇 Priority {len(valid_images)} — Plaque readable + joyful children together in same frame, excellent lighting, perfect donor appeal
 🥈 Priority {len(valid_images)-1} — Happy children playing with/splashing water, very lively and natural joy, clear engagement
 🥉 Priority {max(1, len(valid_images)-2)} — Children operating pump with clear water flow and happy expressions, good composition
-Priority 7 — Children filling containers from pump, visible water, full-body shots, positive energy
+Priority 7+ — Children filling containers from pump, visible water, full-body shots, positive energy
 Priority 6 — Kids drinking and filling simultaneously, joyful but may be cluttered  
 Priority 5 — Drinking from hands or group joy, suboptimal lighting/focus but positive
 Priority 4 — Mixed engagement, some unclear expressions or blocked subjects
@@ -490,30 +518,32 @@ Priority 1 — Very static composition, no water activity, subdued or unclear ex
 ❌ NEVER use generic names like "image1.jpg", "image2.jpg" 
 ✅ ONLY use the exact id and filename from the mapping above
 
+🔒🔒🔒 REMEMBER: USE EACH PRIORITY NUMBER 1-{len(valid_images)} EXACTLY ONCE! 🔒🔒🔒
+
 Respond with ONLY a JSON array using the EXACT IDs and filenames from the mapping above:
 
 [
   {{
     "id": "exact-id-from-mapping-above",
     "filename": "exact-filename-from-mapping-above",
-    "priority": 1,
+    "priority": UNIQUE_NUMBER_FROM_1_TO_{len(valid_images)},
     "reason": "Specific visual justification following the criteria above"
   }},
   ...
 ]
 
-🔒 VALIDATION: Ensure every result uses an exact ID and filename from the mapping. Use each priority number 1-{len(valid_images)} once, with no duplicates or missing numbers."""
+🔒 FINAL VALIDATION: Ensure every result uses an exact ID and filename from the mapping. Use each priority number 1-{len(valid_images)} once, with no duplicates or missing numbers."""
 
     # Download and encode current images for ranking - ENHANCED WITH DATA STORAGE
     message_content = [{"type": "text", "text": enhanced_prompt}]
-    image_data_map = {}  # NEW: Store image data for validation
+    image_data_map = {}  # Store image data for validation
     
     print("🖼️ Processing images for Vision API...")
     for i, img in enumerate(valid_images):
         try:
             img_data = await download_image(img['url'])
             if img_data:
-                # NEW: Store for later validation
+                # Store for later validation
                 image_data_map[img['id']] = img_data
                 
                 base64_image = base64.b64encode(img_data).decode('utf-8')
@@ -530,24 +560,29 @@ Respond with ONLY a JSON array using the EXACT IDs and filenames from the mappin
         except Exception as e:
             print(f"❌ Error processing image {i+1}: {e}")
 
-    # Call OpenAI Vision API
-    try:
-        print("🤖 Calling OpenAI Vision API with GPT-4o...")
-        
-        response = await client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": message_content}],
-            max_tokens=2000,
-            temperature=0.1
-        )
-        
-        print("✅ Received response from OpenAI GPT-4o")
-        
-    except Exception as e:
-        print(f"❌ OpenAI API error: {e}")
-        return {"error": f"OpenAI API error: {str(e)}"}
+    # Call OpenAI Vision API with retry logic
+    max_retries = 2
+    for attempt in range(max_retries + 1):
+        try:
+            print(f"🤖 Calling OpenAI Vision API with GPT-4o (attempt {attempt + 1})...")
+            
+            response = await client.chat.completions.create(
+                model="gpt-4o",
+                messages=[{"role": "user", "content": message_content}],
+                max_tokens=2000,
+                temperature=0.1
+            )
+            
+            print("✅ Received response from OpenAI GPT-4o")
+            break
+            
+        except Exception as e:
+            print(f"❌ OpenAI API error (attempt {attempt + 1}): {e}")
+            if attempt == max_retries:
+                return {"error": f"OpenAI API error after {max_retries + 1} attempts: {str(e)}"}
+            await asyncio.sleep(2)  # Wait before retry
 
-    # Process and validate response with ENHANCED RULE ENFORCEMENT
+    # Process and validate response with BULLETPROOF validation
     try:
         response_text = response.choices[0].message.content
         print(f"📤 Raw OpenAI response: {response_text}")
@@ -564,19 +599,30 @@ Respond with ONLY a JSON array using the EXACT IDs and filenames from the mappin
                 if not all(key in item for key in ['id', 'filename', 'priority', 'reason']):
                     print(f"⚠️ Item {i} missing required fields: {item}")
                     return {"error": f"Missing required fields in result {i}", "item": item}
-                    
-            # Validate priorities are unique and complete
+            
+            # STEP 2: DUPLICATE DETECTION with automatic fixing
             priorities = [item.get('priority') for item in result]
             expected_priorities = list(range(1, len(valid_images) + 1))
             
             if sorted(priorities) != expected_priorities:
-                print(f"⚠️ Priority validation failed!")
+                print(f"🚨 STEP 2: DUPLICATE PRIORITIES DETECTED!")
                 print(f"   Expected: {expected_priorities}")
                 print(f"   Got: {sorted(priorities)}")
-                return {"error": "Priority numbers missing or duplicated", 
-                       "expected": expected_priorities, "received": sorted(priorities)}
+                
+                # STEP 3: AUTOMATIC FIXING
+                print("🔧 STEP 3: AUTOMATICALLY FIXING PRIORITIES...")
+                result = fix_duplicate_priorities(result, len(valid_images))
+                
+                # Verify fix worked
+                fixed_priorities = [item.get('priority') for item in result]
+                if sorted(fixed_priorities) == expected_priorities:
+                    print("✅ Priority fixing successful!")
+                else:
+                    print("❌ Priority fixing failed!")
+                    return {"error": "Could not fix duplicate priorities", 
+                           "expected": expected_priorities, "received": sorted(fixed_priorities)}
             else:
-                print("✅ Priority validation passed")
+                print("✅ Priority validation passed - no duplicates detected")
             
             # CRITICAL: Validate filenames match input exactly
             input_filenames = [img.get('name', img.get('filename', '')) for img in valid_images]
@@ -598,7 +644,7 @@ Respond with ONLY a JSON array using the EXACT IDs and filenames from the mappin
             
             print("✅ Filename and ID validation passed")
 
-            # NEW: Content validation and rule enforcement
+            # Content validation and rule enforcement
             print("🔍 VALIDATING IMAGE CONTENT...")
             image_validations = {}
             
@@ -614,11 +660,11 @@ Respond with ONLY a JSON array using the EXACT IDs and filenames from the mappin
             result = await enforce_ranking_rules(result, image_validations, len(valid_images))
             
             # Log final ranking for verification
-            print("📊 FINAL ENFORCED RANKING:")
+            print("📊 FINAL BULLETPROOF RANKING:")
             for item in sorted(result, key=lambda x: x['priority'], reverse=True):
                 print(f"   Priority {item['priority']}: {item['filename']} - {item['reason']}")
             
-            print(f"🎯 Returning {len(result)} STRICTLY RANKED images to n8n")
+            print(f"🎯 Returning {len(result)} BULLETPROOF RANKED images to n8n")
             return result
             
         else:
