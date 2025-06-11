@@ -25,73 +25,102 @@ _history_cache_lock = asyncio.Lock()
 def get_google_drive_service():
     """Initialize Google Drive service using service account"""
     try:
-        # You'll need to set up service account credentials
+        # FIXED: Handle both JSON content and file path with better error handling
         service_account_file = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE")
-        if not service_account_file:
-            print("❌ GOOGLE_SERVICE_ACCOUNT_FILE environment variable not set")
-            return None
-            
-        credentials = service_account.Credentials.from_service_account_file(
-            service_account_file,
-            scopes=['https://www.googleapis.com/auth/drive.readonly']
-        )
+        service_account_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+
+        # Try JSON first (preferred for cloud deployments like Render)
+        if service_account_json:
+            try:
+                service_account_info = json.loads(service_account_json)
+                credentials = service_account.Credentials.from_service_account_info(
+                    service_account_info,
+                    scopes=['https://www.googleapis.com/auth/drive.readonly']
+                )
+                print("✅ Using GOOGLE_SERVICE_ACCOUNT_JSON")
+                service = build('drive', 'v3', credentials=credentials)
+                print("✅ Google Drive service initialized via JSON")
+                return service
+            except json.JSONDecodeError as e:
+                print(f"❌ Invalid JSON in GOOGLE_SERVICE_ACCOUNT_JSON: {e}")
+            except Exception as e:
+                print(f"❌ Error using GOOGLE_SERVICE_ACCOUNT_JSON: {e}")
         
-        service = build('drive', 'v3', credentials=credentials)
-        print("✅ Google Drive service initialized")
-        return service
+        # Try file path as fallback (only if JSON failed or doesn't exist)
+        if service_account_file:
+            try:
+                # Check if file actually exists before trying to read it
+                if os.path.exists(service_account_file):
+                    credentials = service_account.Credentials.from_service_account_file(
+                        service_account_file,
+                        scopes=['https://www.googleapis.com/auth/drive.readonly']
+                    )
+                    print("✅ Using GOOGLE_SERVICE_ACCOUNT_FILE")
+                    service = build('drive', 'v3', credentials=credentials)
+                    print("✅ Google Drive service initialized via file")
+                    return service
+                else:
+                    print(f"❌ Service account file does not exist: {service_account_file}")
+            except Exception as e:
+                print(f"❌ Error using GOOGLE_SERVICE_ACCOUNT_FILE: {e}")
+        
+        # If we get here, neither method worked
+        if not service_account_json and not service_account_file:
+            print("❌ Neither GOOGLE_SERVICE_ACCOUNT_FILE nor GOOGLE_SERVICE_ACCOUNT_JSON environment variable is set")
+        else:
+            print("❌ Both service account methods failed - check your credentials")
+        
+        return None
         
     except Exception as e:
-        print(f"❌ Error initializing Google Drive service: {e}")
+        print(f"❌ Unexpected error initializing Google Drive service: {e}")
         return None
 
-async def get_all_images_from_folder(service, folder_id, max_images=20):
+async def get_images_from_main_folder(service, folder_id, max_images=20):
     """
-    Recursively get all images from folder and ALL its subfolders
+    FIXED: Get images from MAIN folder only (no recursion) - for history folder
     """
     all_images = []
-    folders_to_process = [folder_id]
     
-    while folders_to_process and len(all_images) < max_images:
-        current_folder = folders_to_process.pop(0)
-        print(f"🔍 Scanning folder: {current_folder}")
+    try:
+        print(f"🔍 Scanning main folder only: {folder_id}")
         
-        try:
-            # Get all items in current folder
-            results = service.files().list(
-                q=f"'{current_folder}' in parents and trashed=false",
-                fields="files(id, name, mimeType, webContentLink)",
-                pageSize=100
-            ).execute()
-            
-            items = results.get('files', [])
-            print(f"📁 Found {len(items)} items in folder {current_folder}")
-            
-            for item in items:
-                # If it's a folder, add to processing queue
-                if item['mimeType'] == 'application/vnd.google-apps.folder':
-                    folders_to_process.append(item['id'])
-                    print(f"📂 Added subfolder to queue: {item['name']}")
+        # Get all items in main folder only
+        results = service.files().list(
+            q=f"'{folder_id}' in parents and trashed=false",
+            fields="files(id, name, mimeType, webContentLink)",
+            pageSize=100
+        ).execute()
+        
+        items = results.get('files', [])
+        print(f"📁 Found {len(items)} items in main folder {folder_id}")
+        
+        # DEBUG: Print what we actually found
+        for item in items:
+            print(f"   Item: {item['name']} | Type: {item['mimeType']}")
+        
+        for item in items:
+            # Only process images, ignore folders
+            if item['mimeType'].startswith('image/'):
+                # Create download URL
+                download_url = f"https://drive.google.com/uc?id={item['id']}&export=download"
+                all_images.append({
+                    'id': item['id'],
+                    'name': item['name'],
+                    'url': download_url,
+                    'folder_id': folder_id
+                })
+                print(f"🖼️ Found image: {item['name']}")
                 
-                # If it's an image, add to results
-                elif item['mimeType'].startswith('image/'):
-                    # Create download URL
-                    download_url = f"https://drive.google.com/uc?id={item['id']}&export=download"
-                    all_images.append({
-                        'id': item['id'],
-                        'name': item['name'],
-                        'url': download_url,
-                        'folder_id': current_folder
-                    })
-                    print(f"🖼️ Found image: {item['name']}")
-                    
-                    if len(all_images) >= max_images:
-                        break
+                if len(all_images) >= max_images:
+                    break
+            else:
+                print(f"📂 Skipping non-image: {item['name']} ({item['mimeType']})")
                         
-        except Exception as e:
-            print(f"❌ Error scanning folder {current_folder}: {e}")
-            continue
+    except Exception as e:
+        print(f"❌ Error scanning main folder {folder_id}: {e}")
     
-    print(f"✅ Total images found across all subfolders: {len(all_images)}")
+    print(f"✅ Total images found in main folder: {len(all_images)}")
     return all_images
 
 async def download_and_analyze_history_images(history_images, max_analyze=5):
@@ -153,7 +182,7 @@ async def download_and_analyze_history_images(history_images, max_analyze=5):
 
 async def get_history_examples(folder_id, max_examples=5):
     """
-    Get example images from history folder for context - WITH GLOBAL CACHING
+    FIXED: Get example images from history folder for context - MAIN FOLDER ONLY
     """
     if not GOOGLE_API_AVAILABLE:
         print("Google API not available - skipping history examples")
@@ -173,17 +202,16 @@ async def get_history_examples(folder_id, max_examples=5):
             # Initialize Google Drive service
             service = get_google_drive_service()
             if not service:
+                print("❌ Could not initialize Google Drive service")
+                _history_cache[cache_key] = ""
                 return ""
             
-            # Get ALL images from ALL subfolders
-            print(f"🔍 Scanning ALL subfolders in history folder: {folder_id}")
-            history_images = await asyncio.get_event_loop().run_in_executor(
-                None, 
-                lambda: asyncio.run(get_all_images_from_folder(service, folder_id, max_images=20))
-            )
+            # FIXED: Get images from MAIN folder only (no recursion)
+            print(f"🔍 Scanning MAIN folder only: {folder_id}")
+            history_images = await get_images_from_main_folder(service, folder_id, max_images=20)
             
             if not history_images:
-                print("❌ No history images found")
+                print("❌ No history images found in main folder")
                 _history_cache[cache_key] = ""
                 return ""
             
@@ -651,7 +679,7 @@ Total images to rank: {len(valid_images)}
     
     mapping_text = "\n".join(filename_mapping)
     
-    # Process history folder if provided - WITH CACHING
+    # Process history folder if provided - WITH CACHING AND FIXED ASYNC
     history_context = ""
     if history_folder and GOOGLE_API_AVAILABLE:
         try:
@@ -662,7 +690,7 @@ Total images to rank: {len(valid_images)}
                 folder_id = folder_id_match.group(1)
                 print(f"📁 Extracted folder ID: {folder_id}")
                 
-                # Get history examples (cached after first call)
+                # FIXED: Get history examples (cached after first call, no async executor issue)
                 history_examples = await get_history_examples(folder_id)
                 if history_examples:
                     history_context = f"\n{history_examples}\n"
