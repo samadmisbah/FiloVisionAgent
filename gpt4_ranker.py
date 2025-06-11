@@ -273,7 +273,6 @@ async def download_image(url):
         print(f"Download error: {e}")
         return None
 
-# NEW: Content validation function for rule enforcement
 async def validate_image_content(image_data, filename):
     """
     Quick content validation for rule enforcement
@@ -281,15 +280,15 @@ async def validate_image_content(image_data, filename):
     try:
         base64_image = base64.b64encode(image_data).decode('utf-8')
         
-        validation_prompt = """Look at this water well image and answer YES or NO:
+        validation_prompt = """Look at this water well image and answer CONFIRMED or DENIED:
 
-1. CHILDREN_VISIBLE: Are children clearly visible?
+1. CHILDREN_WITH_WATER: Are children clearly visible WITH water being actively used or flowing?
 2. PLAQUE_READABLE: Is a donation plaque/sign readable?
 3. WATER_ACTIVE: Is clean water flowing or being actively used?
-4. CHILDREN_HAPPY: Do children appear happy/smiling?
-5. WELL_ONLY: Is this ONLY the well structure with NO children?
+4. CHILDREN_HAPPY_WITH_WATER: Do children appear happy/smiling WITH the presence of water?
+5. WATER_WELL_ONLY: Is this ONLY the water well structure with NO children?
 
-Format: CHILDREN_VISIBLE: YES/NO, PLAQUE_READABLE: YES/NO, WATER_ACTIVE: YES/NO, CHILDREN_HAPPY: YES/NO, WELL_ONLY: YES/NO"""
+Format: CHILDREN_WITH_WATER: CONFIRMED/DENIED, PLAQUE_READABLE: CONFIRMED/DENIED, WATER_ACTIVE: CONFIRMED/DENIED, CHILDREN_HAPPY_WITH_WATER: CONFIRMED/DENIED, WATER_WELL_ONLY: CONFIRMED/DENIED"""
 
         response = await client.chat.completions.create(
             model="gpt-4o",
@@ -314,11 +313,11 @@ Format: CHILDREN_VISIBLE: YES/NO, PLAQUE_READABLE: YES/NO, WATER_ACTIVE: YES/NO,
         print(f"🔍 Content validation for {filename}: {response_text}")
         
         return {
-            'has_children': 'CHILDREN_VISIBLE: YES' in response_text,
-            'has_plaque': 'PLAQUE_READABLE: YES' in response_text,
-            'has_water': 'WATER_ACTIVE: YES' in response_text,
-            'children_happy': 'CHILDREN_HAPPY: YES' in response_text,
-            'well_only': 'WELL_ONLY: YES' in response_text
+            'has_children': 'CHILDREN_WITH_WATER: CONFIRMED' in response_text,
+            'has_plaque': 'PLAQUE_READABLE: CONFIRMED' in response_text,
+            'has_water': 'WATER_ACTIVE: CONFIRMED' in response_text,
+            'children_happy': 'CHILDREN_HAPPY_WITH_WATER: CONFIRMED' in response_text,
+            'well_only': 'WATER_WELL_ONLY: CONFIRMED' in response_text
         }
         
     except Exception as e:
@@ -510,24 +509,44 @@ async def handle_content_policy_violation(valid_images, enhanced_prompt, water_w
     # Proceed with safe images only
     return await rank_safe_images(safe_images, enhanced_prompt, water_well_name, problematic_images)
 
-async def rank_safe_images(safe_images, enhanced_prompt, water_well_name, excluded_images):
+async def rank_safe_images(safe_images, original_enhanced_prompt, water_well_name, excluded_images):
     """
-    Rank only the safe images after content policy filtering
+    FIXED: Rank only the safe images after content policy filtering - PRESERVING ALL ORIGINAL FEATURES
     """
     print(f"🎯 RANKING {len(safe_images)} SAFE IMAGES...")
     
-    # Update prompt for reduced image count
     total_safe = len(safe_images)
-    updated_prompt = enhanced_prompt.replace(
-        f"You are ranking {len(safe_images) + len(excluded_images)} images",
-        f"You are ranking {total_safe} images (some excluded by content policy)"
+    
+    # CRITICAL FIX: Start with the FULL original prompt that includes history context
+    updated_prompt = original_enhanced_prompt
+    
+    # Update ONLY the image count references, preserving everything else
+    updated_prompt = re.sub(
+        r'You are ranking \d+ images',
+        f'You are ranking {total_safe} images (some excluded by content policy)',
+        updated_prompt
     )
     
-    # Update priority ranges in prompt using regex
+    # Update priority references while preserving all content
     updated_prompt = re.sub(
-        r'Priority \d+',
-        f'Priority {total_safe}',
+        r'Priority (\d+) \(becomes _1_\)',
+        f'Priority {total_safe} (becomes _1_)',
         updated_prompt
+    )
+    updated_prompt = re.sub(
+        r'Priority (\d+) \(becomes _2_\)',
+        f'Priority {total_safe-1} (becomes _2_)',
+        updated_prompt
+    )
+    updated_prompt = re.sub(
+        r'Priority (\d+) —',
+        f'Priority {total_safe} —',
+        updated_prompt, count=1
+    )
+    updated_prompt = re.sub(
+        r'Priority (\d+)-1\} —',
+        f'Priority {total_safe-1} —',
+        updated_prompt, count=1
     )
     updated_prompt = re.sub(
         r'priorities 1-\d+',
@@ -535,26 +554,55 @@ async def rank_safe_images(safe_images, enhanced_prompt, water_well_name, exclud
         updated_prompt
     )
     updated_prompt = re.sub(
-        r'Priority {len\(valid_images\)}',
-        f'Priority {total_safe}',
+        r'UNIQUE_NUMBER_FROM_1_TO_\d+',
+        f'UNIQUE_NUMBER_FROM_1_TO_{total_safe}',
+        updated_prompt
+    )
+    updated_prompt = re.sub(
+        r'Use each priority number 1-\d+ once',
+        f'Use each priority number 1-{total_safe} once',
         updated_prompt
     )
     
-    # Create mapping for safe images only
+    # Create NEW mapping for safe images only
     safe_mapping = []
     for i, img in enumerate(safe_images):
         filename = img.get('name', img.get('filename', f'image_{i}.jpg'))
         img_id = img.get('id', f'unknown_id_{i}')
         safe_mapping.append(f"Image {i+1}: id='{img_id}', filename='{filename}'")
     
-    # Replace the mapping section
     mapping_section = "\n".join(safe_mapping)
+    
+    # Replace ONLY the filename mapping section, preserving all other content
     updated_prompt = re.sub(
-        r'📎 CRITICAL FILENAME MAPPING.*?(?=\n\n|$)',
-        f"📎 CRITICAL FILENAME MAPPING - USE THESE EXACT VALUES:\n{mapping_section}",
+        r'📎 CRITICAL FILENAME MAPPING - USE THESE EXACT VALUES:\n.*?(?=\n\n❌ NEVER use generic)',
+        f"📎 CRITICAL FILENAME MAPPING - USE THESE EXACT VALUES:\n{mapping_section}\n\n❌ NEVER use generic",
         updated_prompt,
         flags=re.DOTALL
     )
+    
+    # Update input validation section while preserving everything else
+    input_validation_section = f"""
+🔍 INPUT VALIDATION:
+Total images to rank: {total_safe} (after content policy filtering)
+"""
+    
+    for i, img in enumerate(safe_images):
+        filename = img.get('name', img.get('filename', f'image_{i}.jpg'))
+        img_id = img.get('id', f'unknown_id_{i}')
+        input_validation_section += f"\n{i+1}. ID: {img_id}, Filename: {filename}"
+    
+    # Replace input validation section
+    updated_prompt = re.sub(
+        r'🔍 INPUT VALIDATION:\nTotal images to rank: \d+.*?(?=\n\n)',
+        input_validation_section,
+        updated_prompt,
+        flags=re.DOTALL
+    )
+    
+    print(f"✅ PRESERVED all original prompt features for {total_safe} safe images")
+    print(f"✅ History context: {'PRESERVED' if '📚 SUCCESSFUL EXAMPLES' in updated_prompt else 'MISSING'}")
+    print(f"✅ Ranking rules: {'PRESERVED' if '🚨 ABSOLUTE REQUIREMENTS' in updated_prompt else 'MISSING'}")
     
     # Download and encode safe images
     message_content = [{"type": "text", "text": updated_prompt}]
@@ -577,7 +625,7 @@ async def rank_safe_images(safe_images, enhanced_prompt, water_well_name, exclud
         except Exception as e:
             print(f"❌ Error processing safe image {i+1}: {e}")
     
-    # Call OpenAI with safe images
+    # Call OpenAI with safe images using FULL preserved prompt
     try:
         response = await client.chat.completions.create(
             model="gpt-4o",
@@ -587,7 +635,7 @@ async def rank_safe_images(safe_images, enhanced_prompt, water_well_name, exclud
         )
         
         response_text = response.choices[0].message.content
-        print(f"✅ Successfully ranked {len(safe_images)} safe images")
+        print(f"✅ Successfully ranked {len(safe_images)} safe images with FULL CONTEXT")
         
         # Process the response normally
         json_match = re.search(r'\[.*\]', response_text, re.DOTALL)
